@@ -1060,8 +1060,9 @@ Key Requirements:
         contents: promptContents,
         config: promptConfig
       })
-    } catch (firstErr: any) {
-      console.warn('⚠️ Primary model gemini-2.5-flash failed, attempting fallback model gemini-1.5-flash...', firstErr?.message || firstErr)
+    } catch (firstErr) {
+      const firstErrMsg = firstErr instanceof Error ? firstErr.message : String(firstErr)
+      console.warn('⚠️ Primary model gemini-2.5-flash failed, attempting fallback model gemini-1.5-flash...', firstErrMsg)
       response = await ai.models.generateContent({
         model: 'gemini-1.5-flash',
         contents: promptContents,
@@ -1072,8 +1073,8 @@ Key Requirements:
     if (response && response.text) {
       aiData = JSON.parse(response.text) as AIResponse
     }
-  } catch (err: any) {
-    geminiErrorMsg = err?.message || String(err)
+  } catch (err) {
+    geminiErrorMsg = err instanceof Error ? err.message : String(err)
     console.warn('⚠️ Gemini API call failed. Falling back to high-fidelity offline mock mode.', geminiErrorMsg)
     aiData = generateMockItinerary(text, duration, budget, companions)
     isMock = true
@@ -1143,8 +1144,9 @@ Key Requirements:
       geminiError: geminiErrorMsg || undefined
     }
 
-  } catch (dbErr: any) {
-    console.warn('⚠️ Cloud Firestore write failed, falling back to local mode:', dbErr?.message || dbErr)
+  } catch (dbErr) {
+    const dbErrMsg = dbErr instanceof Error ? dbErr.message : String(dbErr)
+    console.warn('⚠️ Cloud Firestore write failed, falling back to local mode:', dbErrMsg)
     
     const fallbackId = 'local-trip-' + Date.now()
     

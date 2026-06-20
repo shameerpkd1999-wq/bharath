@@ -43,12 +43,42 @@ interface CustomStopItem {
   editing: boolean
 }
 
-// Helper to parse single-place, search, query, and direction URLs from Google Maps
-function parseGoogleMapsUrl(urlString: string): ParsedPlace[] {
+// Helper to parse single-place, search, query, and direction URLs from Google Maps & Mappls (MapmyIndia)
+function parseMapLinkUrl(urlString: string): ParsedPlace[] {
   try {
     const url = new URL(urlString)
     const pathname = url.pathname
     
+    // --- MAPPLS (MAPMYINDIA) LINK PARSING ---
+    if (url.hostname.includes('mappls.com')) {
+      // 1. Coordinate-based URL: /place/@lat,lng or /@lat,lng or similar
+      const coordMatch = pathname.match(/@(-?\d+\.\d+),(-?\d+\.\d+)/)
+      if (coordMatch) {
+        const lat = parseFloat(coordMatch[1])
+        const lng = parseFloat(coordMatch[2])
+        return [{ placeName: `Mappls Location (${lat.toFixed(4)}, ${lng.toFixed(4)})`, lat, lng }]
+      }
+      
+      // 2. Navigation URL: ?places=lat,lng,name or ?places=lat,lng
+      const placesParam = url.searchParams.get('places')
+      if (placesParam) {
+        const parts = placesParam.split(',')
+        if (parts.length >= 2) {
+          const lat = parseFloat(parts[0])
+          const lng = parseFloat(parts[1])
+          const name = parts[2] ? decodeURIComponent(parts[2]).replace(/\+/g, ' ') : `Mappls Location (${lat.toFixed(4)}, ${lng.toFixed(4)})`
+          return [{ placeName: name, lat, lng }]
+        }
+      }
+      
+      // 3. Mappls Pin: /9ADJ1X
+      const cleanPath = pathname.replace(/^\//, '').trim()
+      if (cleanPath && cleanPath.length === 6 && !cleanPath.includes('/')) {
+        return [{ placeName: `Mappls Pin: ${cleanPath}` }]
+      }
+    }
+    
+    // --- GOOGLE MAPS LINK PARSING ---
     // 1. Direction URLs: /maps/dir/Place1/Place2/...
     if (pathname.includes('/maps/dir/')) {
       const dirIndex = pathname.indexOf('/maps/dir/')
@@ -260,7 +290,7 @@ Traveling companions: ${selectedCompanions}
   const handleSelectSuggestion = (place: PlaceSuggestion) => {
     const newStop: CustomStopItem = {
       id: generateCustomWaypointId(customStops.length),
-      placeName: place.display_name.split(',')[0] || place.display_name,
+      placeName: place.display_name,
       lat: parseFloat(String(place.lat)),
       lng: parseFloat(String(place.lon)),
       durationMin: 90,
@@ -282,9 +312,9 @@ Traveling companions: ${selectedCompanions}
       return
     }
 
-    const parsed = parseGoogleMapsUrl(urlStr)
+    const parsed = parseMapLinkUrl(urlStr)
     if (parsed.length === 0) {
-      setError('Could not extract location details from the pasted URL. Please verify it is a valid Google Maps link.')
+      setError('Could not extract location details from the pasted URL. Please verify it is a valid Google Maps or Mappls link.')
       return
     }
 

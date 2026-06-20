@@ -40,9 +40,10 @@ export default function AuthPage() {
         await signUp(email, password, name)
       }
       router.push('/explore')
-    } catch (err: any) {
+    } catch (err) {
       console.error(err)
-      setError(err?.message || 'Authentication failed. Please try again.')
+      const message = err instanceof Error ? err.message : String(err)
+      setError(message || 'Authentication failed. Please try again.')
     } finally {
       setActionLoading(false)
     }
@@ -54,9 +55,10 @@ export default function AuthPage() {
     try {
       await loginWithGoogle()
       router.push('/explore')
-    } catch (err: any) {
+    } catch (err) {
       console.error(err)
-      setError(err?.message || 'Google Sign-in failed.')
+      const message = err instanceof Error ? err.message : String(err)
+      setError(message || 'Google Sign-in failed.')
     } finally {
       setActionLoading(false)
     }
