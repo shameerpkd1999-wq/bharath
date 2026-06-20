@@ -9,6 +9,7 @@ import ProtectedRoute from '@/components/ProtectedRoute'
 import { db } from '@/lib/firebase'
 import { doc, getDoc, collection, getDocs, orderBy, query } from 'firebase/firestore'
 import { Trip, Waypoint } from '@/types/travel'
+import type { RouteStep } from '@/components/ItineraryMap'
 import dynamic from 'next/dynamic'
 
 interface TripDetail extends Trip {
@@ -205,6 +206,7 @@ export default function TripDetailPage({ params }: { params: Promise<{ id: strin
   const [searchingSuggestions, setSearchingSuggestions] = useState(false)
   const [travelMode, setTravelMode] = useState<'driving' | 'two-wheeler' | 'walking'>('driving')
   const [routeInfo, setRouteInfo] = useState<{ distanceKm: number; durationMin: number } | null>(null)
+  const [routeSteps, setRouteSteps] = useState<RouteStep[] | null>(null)
   const [locatingCurrent, setLocatingCurrent] = useState(false)
   const [startTrip, setStartTrip] = useState(false)
 
@@ -888,6 +890,37 @@ export default function TripDetailPage({ params }: { params: Promise<{ id: strin
     setTimeout(() => setCopied(false), 2000)
   }
 
+  const getGoogleMapsDirectionsLink = () => {
+    if (!trip || trip.waypoints.length === 0) return '#'
+    const modeMap = {
+      driving: 'driving',
+      'two-wheeler': 'driving',
+      walking: 'walking'
+    }
+    const mode = modeMap[travelMode] || 'driving'
+    
+    const destWp = trip.waypoints[trip.waypoints.length - 1]
+    const dest = `${destWp.lat},${destWp.lng}`
+    
+    const midWaypoints = trip.waypoints.slice(0, -1)
+    const waypointsParam = midWaypoints.map(w => `${w.lat},${w.lng}`).join('|')
+    
+    let url = `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(dest)}&travelmode=${mode}`
+    if (waypointsParam) {
+      url += `&waypoints=${encodeURIComponent(waypointsParam)}`
+    }
+    return url
+  }
+
+  const getMapplsDirectionsLink = () => {
+    if (!trip || trip.waypoints.length === 0) return '#'
+    const coords: string[] = []
+    trip.waypoints.forEach(w => {
+      coords.push(`${w.lat},${w.lng}`)
+    })
+    return `https://mappls.com/dir/${coords.join('/')}`
+  }
+
   return (
     <ProtectedRoute>
       <div className="w-full min-h-screen bg-slate-50 dark:bg-slate-950 pb-20 flex flex-col overflow-hidden relative">
@@ -949,6 +982,7 @@ export default function TripDetailPage({ params }: { params: Promise<{ id: strin
                 activeWaypointId={activeWaypointId} 
                 travelMode={travelMode}
                 onRouteInfoUpdate={setRouteInfo}
+                onRouteStepsUpdate={setRouteSteps}
                 startTrip={startTrip}
               />
             </div>
@@ -1037,7 +1071,12 @@ export default function TripDetailPage({ params }: { params: Promise<{ id: strin
                 </div>
                 <button
                   type="button"
-                  onClick={() => setStartTrip(!startTrip)}
+                  onClick={() => {
+                    setStartTrip(!startTrip)
+                    if (startTrip) {
+                      setRouteSteps(null)
+                    }
+                  }}
                   className={`w-full py-2.5 rounded-xl text-xs font-bold transition-all duration-200 flex items-center justify-center gap-1.5 cursor-pointer border ${
                     startTrip
                       ? 'bg-rose-50 dark:bg-rose-950/20 text-rose-600 dark:text-rose-400 border-rose-200 dark:border-rose-900/50 hover:bg-rose-100 dark:hover:bg-rose-900/30'
@@ -1059,7 +1098,74 @@ export default function TripDetailPage({ params }: { params: Promise<{ id: strin
                     </>
                   )}
                 </button>
+                {startTrip && (
+                  <div className="grid grid-cols-2 gap-2 mt-1">
+                    <a
+                      href={getGoogleMapsDirectionsLink()}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="py-2.5 rounded-xl text-[10px] font-extrabold bg-emerald-50 dark:bg-emerald-950/20 hover:bg-emerald-100 dark:hover:bg-emerald-900/30 border border-emerald-250 dark:border-emerald-900/40 text-emerald-700 dark:text-emerald-450 flex items-center justify-center gap-1.5 active:scale-[0.98] transition-all shadow-[0_1px_3px_rgba(0,0,0,0.01)] cursor-pointer"
+                    >
+                      🚗 Open Google Maps
+                    </a>
+                    <a
+                      href={getMapplsDirectionsLink()}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="py-2.5 rounded-xl text-[10px] font-extrabold bg-sky-50 dark:bg-sky-950/20 hover:bg-sky-100 dark:hover:bg-sky-900/30 border border-sky-250 dark:border-sky-900/40 text-sky-700 dark:text-sky-450 flex items-center justify-center gap-1.5 active:scale-[0.98] transition-all shadow-[0_1px_3px_rgba(0,0,0,0.01)] cursor-pointer"
+                    >
+                      🗺️ Open Mappls Map
+                    </a>
+                  </div>
+                )}
               </div>
+
+              {/* Turn-by-Turn Directions Panel (only when startTrip is active) */}
+              {startTrip && routeSteps && routeSteps.length > 0 && (
+                <div className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800/80 rounded-[20px] p-3.5 shadow-[0_2px_8px_rgba(0,0,0,0.01)] shrink-0 flex flex-col gap-2 animate-fade-in">
+                  <div className="flex items-center justify-between border-b border-slate-50 dark:border-slate-800/50 pb-2">
+                    <span className="text-[10px] font-extrabold text-slate-400 dark:text-slate-500 uppercase tracking-widest pl-0.5 flex items-center gap-1.5 font-sans">
+                      <Navigation className="h-3.5 w-3.5 rotate-45 text-indigo-500 fill-indigo-500/10" />
+                      Live Directions
+                    </span>
+                    <span className="text-[9px] font-extrabold bg-indigo-50 dark:bg-indigo-950/40 text-indigo-650 dark:text-indigo-400 px-2 py-0.5 rounded-lg border border-indigo-100/30 dark:border-indigo-900/20 font-sans">
+                      {routeSteps.length} Steps
+                    </span>
+                  </div>
+                  <div className="max-h-48 overflow-y-auto space-y-2.5 pr-1 mt-1 font-sans divide-y divide-slate-50 dark:divide-slate-800/30">
+                    {routeSteps.map((step, idx) => {
+                      let icon = '➡️'
+                      const type = step.type || ''
+                      const modifier = step.modifier || ''
+                      if (type === 'depart') icon = '🟢'
+                      else if (type === 'arrive') icon = '🏁'
+                      else if (modifier.includes('left')) icon = '↩️'
+                      else if (modifier.includes('right')) icon = '↪️'
+                      else if (modifier === 'straight') icon = '⬆️'
+                      else if (type === 'roundabout') icon = '🔄'
+
+                      return (
+                        <div key={idx} className={`flex gap-2.5 items-start ${idx > 0 ? 'pt-2.5' : ''}`}>
+                          <span className="text-xs shrink-0 mt-0.5">{icon}</span>
+                          <div className="flex-1 min-w-0">
+                            <p className="text-xs font-semibold text-slate-700 dark:text-slate-300 leading-snug">
+                              {step.instruction}
+                            </p>
+                            {step.distanceMeters > 0 && (
+                              <p className="text-[9px] font-bold text-slate-405 dark:text-slate-500 mt-0.5">
+                                {step.distanceMeters >= 1000 
+                                  ? `${(step.distanceMeters / 1000).toFixed(1)} km` 
+                                  : `${Math.round(step.distanceMeters)} m`
+                                }
+                              </p>
+                            )}
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                </div>
+              )}
 
               {/* Waypoint Timeline List */}
               <div className="space-y-3">

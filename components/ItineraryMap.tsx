@@ -6,6 +6,29 @@ import 'leaflet/dist/leaflet.css'
 import Script from 'next/script'
 import { Loader2, Navigation } from 'lucide-react'
 
+export interface RouteStep {
+  instruction: string
+  distanceMeters: number
+  durationSeconds: number
+  type: string
+  modifier?: string
+}
+
+interface OSRMStep {
+  name?: string
+  distance: number
+  duration: number
+  maneuver: {
+    type: string
+    modifier?: string
+    instruction?: string
+  }
+}
+
+interface OSRMLeg {
+  steps?: OSRMStep[]
+}
+
 interface WaypointMapPoint {
   id: string
   placeName: string
@@ -14,11 +37,12 @@ interface WaypointMapPoint {
   lng: number
 }
 
-interface ItineraryMapProps {
+export interface ItineraryMapProps {
   waypoints: WaypointMapPoint[]
   activeWaypointId: string | null
   travelMode: 'driving' | 'two-wheeler' | 'walking'
   onRouteInfoUpdate?: (info: { distanceKm: number; durationMin: number } | null) => void
+  onRouteStepsUpdate?: (steps: RouteStep[] | null) => void
   startTrip?: boolean
 }
 
@@ -46,7 +70,58 @@ interface CustomWindow extends Window {
   mappls?: MapplsInstance
 }
 
-export default function ItineraryMap({ waypoints, activeWaypointId, travelMode, onRouteInfoUpdate, startTrip = false }: ItineraryMapProps) {
+function getStepInstruction(step: OSRMStep): string {
+  const maneuver = step.maneuver || {}
+  const type = maneuver.type || ''
+  const modifier = maneuver.modifier || ''
+  const streetName = step.name || ''
+
+  const street = streetName.trim() ? streetName : 'road'
+
+  if (type === 'depart') {
+    return `Head ${modifier ? modifier + ' ' : ''}on ${street}`
+  }
+  if (type === 'arrive') {
+    return `Arrive at destination`
+  }
+  if (type === 'merge') {
+    return `Merge onto ${street}`
+  }
+  if (type === 'fork') {
+    return `Take the fork ${modifier ? modifier + ' ' : ''}onto ${street}`
+  }
+  if (type === 'off ramp') {
+    return `Take the exit ramp onto ${street}`
+  }
+  if (type === 'on ramp') {
+    return `Take the entrance ramp onto ${street}`
+  }
+
+  if (type === 'turn') {
+    if (modifier === 'straight') return `Go straight onto ${street}`
+    if (modifier === 'slight left') return `Slight left onto ${street}`
+    if (modifier === 'slight right') return `Slight right onto ${street}`
+    if (modifier === 'sharp left') return `Sharp left onto ${street}`
+    if (modifier === 'sharp right') return `Sharp right onto ${street}`
+    if (modifier === 'left') return `Turn left onto ${street}`
+    if (modifier === 'right') return `Turn right onto ${street}`
+    if (modifier === 'uturn') return `Make a U-turn onto ${street}`
+    return `Turn ${modifier} onto ${street}`
+  }
+
+  if (type === 'roundabout') {
+    return `Enter the roundabout and take exit onto ${street}`
+  }
+
+  if (type) {
+    const action = type.charAt(0).toUpperCase() + type.slice(1)
+    return `${action} ${modifier ? modifier + ' ' : ''}onto ${street}`
+  }
+
+  return `Continue onto ${street}`
+}
+
+export default function ItineraryMap({ waypoints, activeWaypointId, travelMode, onRouteInfoUpdate, onRouteStepsUpdate, startTrip = false }: ItineraryMapProps) {
   const mapplKey = process.env.NEXT_PUBLIC_MAPPLS_SDK_KEY
   
   // Sizing & engine states (defaults to Leaflet and upgrades if Mappls loads)
@@ -117,6 +192,9 @@ export default function ItineraryMap({ waypoints, activeWaypointId, travelMode, 
         if (onRouteInfoUpdate) {
           onRouteInfoUpdate(null)
         }
+        if (onRouteStepsUpdate) {
+          onRouteStepsUpdate(null)
+        }
       })
       return
     }
@@ -127,7 +205,7 @@ export default function ItineraryMap({ waypoints, activeWaypointId, travelMode, 
       // 1. Try to fetch the entire route in a single request first
       try {
         const coordsQuery = validWaypoints.map(wp => `${wp.lng},${wp.lat}`).join(';')
-        const res = await fetch(`https://router.project-osrm.org/route/v1/${profile}/${coordsQuery}?overview=full&geometries=geojson`)
+        const res = await fetch(`https://router.project-osrm.org/route/v1/${profile}/${coordsQuery}?overview=full&geometries=geojson&steps=true`)
         if (res.ok) {
           const data = await res.json()
           if (data && data.code === 'Ok' && data.routes && data.routes.length > 0) {
@@ -146,6 +224,27 @@ export default function ItineraryMap({ waypoints, activeWaypointId, travelMode, 
                 : route.duration / 60
               onRouteInfoUpdate({ distanceKm, durationMin })
             }
+
+            // Extract steps
+            if (onRouteStepsUpdate) {
+              const steps: RouteStep[] = []
+              if (route.legs && Array.isArray(route.legs)) {
+                route.legs.forEach((leg: OSRMLeg) => {
+                  if (leg.steps && Array.isArray(leg.steps)) {
+                    leg.steps.forEach((step: OSRMStep) => {
+                      steps.push({
+                        instruction: step.maneuver.instruction || getStepInstruction(step),
+                        distanceMeters: step.distance,
+                        durationSeconds: step.duration,
+                        type: step.maneuver.type,
+                        modifier: step.maneuver.modifier
+                      })
+                    })
+                  }
+                })
+              }
+              onRouteStepsUpdate(steps)
+            }
             return
           }
         }
@@ -161,6 +260,7 @@ export default function ItineraryMap({ waypoints, activeWaypointId, travelMode, 
         coordinates: { lat: number; lng: number }[]
         distance: number
         duration: number
+        steps?: RouteStep[]
       }
 
       for (let i = 0; i < validWaypoints.length - 1; i++) {
@@ -169,19 +269,32 @@ export default function ItineraryMap({ waypoints, activeWaypointId, travelMode, 
         
         const fetchLeg = async (): Promise<LegResult> => {
           try {
-            const url = `https://router.project-osrm.org/route/v1/${profile}/${start.lng},${start.lat};${end.lng},${end.lat}?overview=full&geometries=geojson`
+            const url = `https://router.project-osrm.org/route/v1/${profile}/${start.lng},${start.lat};${end.lng},${end.lat}?overview=full&geometries=geojson&steps=true`
             const res = await fetch(url)
             if (res.ok) {
               const data = await res.json()
               if (data && data.code === 'Ok' && data.routes && data.routes.length > 0) {
                 const route = data.routes[0]
+                const legSteps: RouteStep[] = []
+                if (route.legs && route.legs[0] && route.legs[0].steps) {
+                  route.legs[0].steps.forEach((step: OSRMStep) => {
+                    legSteps.push({
+                      instruction: step.maneuver.instruction || getStepInstruction(step),
+                      distanceMeters: step.distance,
+                      durationSeconds: step.duration,
+                      type: step.maneuver.type,
+                      modifier: step.maneuver.modifier
+                    })
+                  })
+                }
                 return {
                   coordinates: route.geometry.coordinates.map(([lng, lat]: [number, number]) => ({
                     lat,
                     lng
                   })),
                   distance: route.distance,
-                  duration: route.duration
+                  duration: route.duration,
+                  steps: legSteps
                 }
               }
             }
@@ -199,7 +312,21 @@ export default function ItineraryMap({ waypoints, activeWaypointId, travelMode, 
               { lat: end.lat, lng: end.lng }
             ],
             distance: approxDistMeters,
-            duration: approxDurationSeconds
+            duration: approxDurationSeconds,
+            steps: [
+              {
+                instruction: `Head straight from ${start.placeName} to ${end.placeName}`,
+                distanceMeters: approxDistMeters,
+                durationSeconds: approxDurationSeconds,
+                type: 'depart'
+              },
+              {
+                instruction: `Arrive at ${end.placeName}`,
+                distanceMeters: 0,
+                durationSeconds: 0,
+                type: 'arrive'
+              }
+            ]
           }
         }
         
@@ -211,6 +338,7 @@ export default function ItineraryMap({ waypoints, activeWaypointId, travelMode, 
         const fullRoute: { lat: number, lng: number }[] = []
         let totalDistanceMeters = 0
         let totalDurationSeconds = 0
+        const fullSteps: RouteStep[] = []
 
         resolvedLegs.forEach((leg, index) => {
           totalDistanceMeters += leg.distance
@@ -220,6 +348,10 @@ export default function ItineraryMap({ waypoints, activeWaypointId, travelMode, 
             fullRoute.push(...leg.coordinates)
           } else {
             fullRoute.push(...leg.coordinates.slice(1))
+          }
+
+          if (leg.steps) {
+            fullSteps.push(...leg.steps)
           }
         })
         setDetailedRoute(fullRoute)
@@ -232,17 +364,33 @@ export default function ItineraryMap({ waypoints, activeWaypointId, travelMode, 
             : totalDurationSeconds / 60
           onRouteInfoUpdate({ distanceKm, durationMin })
         }
+
+        if (onRouteStepsUpdate) {
+          onRouteStepsUpdate(fullSteps)
+        }
       } catch (err) {
         console.error('All routing attempts failed, falling back to straight lines:', err)
         setDetailedRoute(validWaypoints.map(wp => ({ lat: wp.lat, lng: wp.lng })))
         if (onRouteInfoUpdate) {
           onRouteInfoUpdate(null)
         }
+        if (onRouteStepsUpdate) {
+          const fallbackSteps: RouteStep[] = []
+          for (let i = 0; i < validWaypoints.length - 1; i++) {
+            fallbackSteps.push({
+              instruction: `Proceed directly from ${validWaypoints[i].placeName} to ${validWaypoints[i+1].placeName}`,
+              distanceMeters: 0,
+              durationSeconds: 0,
+              type: 'depart'
+            })
+          }
+          onRouteStepsUpdate(fallbackSteps)
+        }
       }
     }
 
     fetchRoute()
-  }, [waypoints, travelMode, onRouteInfoUpdate, startTrip, userLocation])
+  }, [waypoints, travelMode, onRouteInfoUpdate, onRouteStepsUpdate, startTrip, userLocation])
 
   // Cleanup Leaflet map when switching to Mappls to avoid DOM conflicts
   useEffect(() => {
