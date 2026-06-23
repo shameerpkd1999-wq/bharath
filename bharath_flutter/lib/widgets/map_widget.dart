@@ -40,7 +40,7 @@ class _ItineraryMapWidgetState extends State<ItineraryMapWidget> {
 
   // Caching: avoid redundant snapping/splitting on every frame
   Map<String, double>? _cachedSnappedLocation;
-  List<Map<String, double>>? _lastRawUserLocation;
+  Map<String, double>? _lastRawUserLocation;
   List<Map<String, double>>? _lastPolylineForSnap;
   List<Map<String, double>> _cachedCompleted = [];
   List<Map<String, double>> _cachedRemaining = [];
@@ -118,7 +118,7 @@ class _ItineraryMapWidgetState extends State<ItineraryMapWidget> {
       return;
     }
 
-    _lastRawUserLocation = rawLoc as List<Map<String, double>>?;
+    _lastRawUserLocation = rawLoc;
     _lastPolylineForSnap = poly;
 
     if (rawLoc == null) {
@@ -579,7 +579,8 @@ class _ItineraryMapWidgetState extends State<ItineraryMapWidget> {
         const heading = userLoc.heading || 0;
         let userMarkerHtml;
         if (data.startTrip && userLoc.heading !== undefined) {
-          userMarkerHtml = '<div class="nav-arrow" style="transform: rotate(' + heading + 'deg)"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M12 2L4.5 20.29L5.21 21L12 18L18.79 21L19.5 20.29L12 2Z" fill="#3B82F6" stroke="white" stroke-width="2" stroke-linejoin="round"/></svg></div>';
+          // During navigation, marker always points 'up' (forward) — map camera bearing handles direction
+          userMarkerHtml = '<div class="nav-arrow"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M12 2L4.5 20.29L5.21 21L12 18L18.79 21L19.5 20.29L12 2Z" fill="#3B82F6" stroke="white" stroke-width="2" stroke-linejoin="round"/></svg></div>';
         } else {
           userMarkerHtml = '<div class="user-dot"></div>';
         }
@@ -657,15 +658,15 @@ class _ItineraryMapWidgetState extends State<ItineraryMapWidget> {
             userMarker.setLngLat([data.lng, data.lat]);
           }
           
-          // Update rotation via CSS transform only (no innerHTML replacement)
+          // During navigation, marker points 'up' — camera bearing handles rotation
           if (userMarker.getElement) {
-            const heading = data.heading || 0;
             const navDiv = userMarker.getElement().querySelector('.nav-arrow');
             if (navDiv) {
-              navDiv.style.transform = 'rotate(' + heading + 'deg)';
+              // Remove any inline rotation — arrow always faces forward
+              navDiv.style.transform = '';
             } else if (data.startTrip) {
-              // Switched from dot to arrow — need one innerHTML update
-              userMarker.getElement().innerHTML = '<div class="nav-arrow" style="transform: rotate(' + heading + 'deg)"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M12 2L4.5 20.29L5.21 21L12 18L18.79 21L19.5 20.29L12 2Z" fill="#3B82F6" stroke="white" stroke-width="2" stroke-linejoin="round"/></svg></div>';
+              // Switched from dot to arrow — no rotation needed during navigation
+              userMarker.getElement().innerHTML = '<div class="nav-arrow"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M12 2L4.5 20.29L5.21 21L12 18L18.79 21L19.5 20.29L12 2Z" fill="#3B82F6" stroke="white" stroke-width="2" stroke-linejoin="round"/></svg></div>';
             }
           }
         } catch (e) {
@@ -675,10 +676,10 @@ class _ItineraryMapWidgetState extends State<ItineraryMapWidget> {
       }
 
       if (!userMarker) {
-        const heading = data.heading || 0;
         let userMarkerHtml;
         if (data.startTrip) {
-          userMarkerHtml = '<div class="nav-arrow" style="transform: rotate(' + heading + 'deg)"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M12 2L4.5 20.29L5.21 21L12 18L18.79 21L19.5 20.29L12 2Z" fill="#3B82F6" stroke="white" stroke-width="2" stroke-linejoin="round"/></svg></div>';
+          // No rotation — camera bearing handles direction
+          userMarkerHtml = '<div class="nav-arrow"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M12 2L4.5 20.29L5.21 21L12 18L18.79 21L19.5 20.29L12 2Z" fill="#3B82F6" stroke="white" stroke-width="2" stroke-linejoin="round"/></svg></div>';
         } else {
           userMarkerHtml = '<div class="user-dot"></div>';
         }
@@ -816,13 +817,16 @@ class _ItineraryMapWidgetState extends State<ItineraryMapWidget> {
         final double heading = effectiveLocation['heading'] ?? 0.0;
         final isNavigating = widget.startTrip && effectiveLocation.containsKey('heading');
 
+        // During active navigation, the MAP CAMERA is already rotated by the heading,
+        // so the marker must NOT also rotate — it should always point "up" (forward).
+        // When NOT navigating (north-up map), the marker rotates to show facing direction.
         markers.add(
           Marker(
             point: LatLng(effectiveLocation['lat']!, effectiveLocation['lng']!),
             width: 40,
             height: 40,
             child: Transform.rotate(
-              angle: isNavigating ? heading * (math.pi / 180) : 0.0,
+              angle: isNavigating ? 0.0 : heading * (math.pi / 180),
               child: isNavigating
                   ? Center(
                       child: Icon(
