@@ -1,0 +1,106 @@
+# Codemagic CI/CD Configuration for BharatYatra
+# This file must be located in the root of the repository.
+
+workflows:
+  ios-debug-simulator:
+    name: iOS Debug Simulator Build (No Signing Required)
+    max_build_duration: 60
+    instance_type: mac_mini_m1
+    environment:
+      groups:
+        - api_keys # Create this environment variable group in Codemagic to store your GEMINI_API_KEY
+      vars:
+        # Default fallback values; override these in Codemagic UI
+        GEMINI_API_KEY: "mock_key"
+      flutter: stable
+      xcode: latest
+      cocoapods: default
+    triggering:
+      events:
+        - push
+      branch_patterns:
+        - pattern: 'master'
+          include: true
+    scripts:
+      - name: Set up Firebase Config (iOS)
+        script: |
+          # If you upload your GoogleService-Info.plist as a base64-encoded environment variable
+          # named GOOGLE_SERVICE_INFO_PLIST in Codemagic UI, this script will decode it automatically.
+          if [ -n "$GOOGLE_SERVICE_INFO_PLIST" ]; then
+            echo "Decoding GoogleService-Info.plist..."
+            echo "$GOOGLE_SERVICE_INFO_PLIST" | base64 --decode > $FCI_BUILD_DIR/bharath_flutter/ios/Runner/GoogleService-Info.plist
+          else
+            echo "Warning: GOOGLE_SERVICE_INFO_PLIST environment variable not set."
+            echo "Make sure to add it or commit GoogleService-Info.plist to build successfully with Firebase."
+          fi
+      - name: Fetch Flutter packages
+        script: |
+          cd $FCI_BUILD_DIR/bharath_flutter
+          flutter packages pub get
+      - name: Set up CocoaPods
+        script: |
+          cd $FCI_BUILD_DIR/bharath_flutter/ios
+          pod install
+      - name: Build iOS for Simulator
+        script: |
+          cd $FCI_BUILD_DIR/bharath_flutter
+          flutter build ios --simulator --debug --no-codesign --dart-define=GEMINI_API_KEY="$GEMINI_API_KEY"
+          # Compress the app build for easy download
+          cd build/ios/iphonesimulator
+          zip -r ../../../Runner.app.zip Runner.app
+    artifacts:
+      - Runner.app.zip
+
+  ios-release:
+    name: iOS Release IPA Build (App Store / TestFlight)
+    max_build_duration: 120
+    instance_type: mac_mini_m1
+    environment:
+      groups:
+        - api_keys
+        # Create an 'apple_signing' group for certificates, or use Codemagic's App Store Connect integration.
+      vars:
+        GEMINI_API_KEY: "mock_key"
+      flutter: stable
+      xcode: latest
+      cocoapods: default
+    triggering:
+      events:
+        - push
+      branch_patterns:
+        - pattern: 'master'
+          include: true
+    scripts:
+      - name: Set up Firebase Config (iOS)
+        script: |
+          if [ -n "$GOOGLE_SERVICE_INFO_PLIST" ]; then
+            echo "Decoding GoogleService-Info.plist..."
+            echo "$GOOGLE_SERVICE_INFO_PLIST" | base64 --decode > $FCI_BUILD_DIR/bharath_flutter/ios/Runner/GoogleService-Info.plist
+          else
+            echo "Warning: GOOGLE_SERVICE_INFO_PLIST environment variable not set."
+          fi
+      - name: Fetch Flutter packages
+        script: |
+          cd $FCI_BUILD_DIR/bharath_flutter
+          flutter packages pub get
+      - name: Set up CocoaPods
+        script: |
+          cd $FCI_BUILD_DIR/bharath_flutter/ios
+          pod install
+      - name: Build iOS IPA
+        script: |
+          cd $FCI_BUILD_DIR/bharath_flutter
+          
+          # If Apple Signing is configured in Codemagic, build a signed IPA.
+          # Otherwise, build with --no-codesign to verify the code compilation works.
+          if [ -z "$APP_STORE_CONNECT_KEY" ]; then
+            echo "Signing credentials not configured in Codemagic environment variables."
+            echo "Building unsigned release build..."
+            flutter build ipa --release --no-codesign --dart-define=GEMINI_API_KEY="$GEMINI_API_KEY"
+          else
+            echo "Signing credentials found. Building signed release build..."
+            flutter build ipa --release --dart-define=GEMINI_API_KEY="$GEMINI_API_KEY"
+          fi
+    artifacts:
+      - $FCI_BUILD_DIR/bharath_flutter/build/ios/ipa/*.ipa
+      - $FCI_BUILD_DIR/bharath_flutter/build/ios/archive/*.xcarchive
