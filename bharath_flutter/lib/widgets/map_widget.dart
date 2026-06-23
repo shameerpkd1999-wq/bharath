@@ -32,6 +32,7 @@ class _ItineraryMapWidgetState extends State<ItineraryMapWidget> {
   WebViewController? _webViewController;
   bool _mapplsLoaded = false;
   bool _useMappls = true;
+  bool _disposed = false;
 
   // Leaflet Fallback States
   final MapController _mapController = MapController();
@@ -65,6 +66,14 @@ class _ItineraryMapWidgetState extends State<ItineraryMapWidget> {
     }
   }
 
+  @override
+  void dispose() {
+    _disposed = true;
+    _mapController.dispose();
+    _webViewController = null;
+    super.dispose();
+  }
+
   void _initWebViewController() {
     _webViewController = WebViewController()
       ..setJavaScriptMode(JavaScriptMode.unrestricted)
@@ -72,17 +81,22 @@ class _ItineraryMapWidgetState extends State<ItineraryMapWidget> {
       ..addJavaScriptChannel(
         'MapplsChannel',
         onMessageReceived: (JavaScriptMessage message) {
+          if (_disposed || !mounted) return;
           try {
             final data = jsonDecode(message.message);
             if (data['event'] == 'loaded') {
-              setState(() {
-                _mapplsLoaded = true;
-              });
-              _sendUpdateToWeb();
+              if (mounted) {
+                setState(() {
+                  _mapplsLoaded = true;
+                });
+                _sendUpdateToWeb();
+              }
             } else if (data['event'] == 'error') {
-              setState(() {
-                _useMappls = false;
-              });
+              if (mounted) {
+                setState(() {
+                  _useMappls = false;
+                });
+              }
             }
           } catch (_) {}
         },
@@ -318,6 +332,7 @@ class _ItineraryMapWidgetState extends State<ItineraryMapWidget> {
   @override
   void didUpdateWidget(covariant ItineraryMapWidget oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (_disposed) return;
 
     // Invalidate cache when inputs change
     if (!identical(widget.userLocation, oldWidget.userLocation) ||
@@ -353,7 +368,9 @@ class _ItineraryMapWidgetState extends State<ItineraryMapWidget> {
           orElse: () => Waypoint(id: '', placeName: '', order: 0, durationMin: 0, foodSpots: [], photoPoints: [], lat: 0, lng: 0),
         );
         if (activeWp.id.isNotEmpty && activeWp.lat != 0.0) {
-          _mapController.move(LatLng(activeWp.lat, activeWp.lng), 14.0);
+          try {
+            _mapController.move(LatLng(activeWp.lat, activeWp.lng), 14.0);
+          } catch (_) {}
         }
       }
 
@@ -365,11 +382,14 @@ class _ItineraryMapWidgetState extends State<ItineraryMapWidget> {
         final double lng = effectiveLocation['lng']!;
         final double heading = effectiveLocation['heading'] ?? 0.0;
         
-        // Use moveAndRotate for a single render pass instead of two separate calls
-        _mapController.moveAndRotate(LatLng(lat, lng), 18.0, -heading);
+        try {
+          _mapController.moveAndRotate(LatLng(lat, lng), 18.0, -heading);
+        } catch (_) {}
         _rotation = -heading;
       } else if (!widget.startTrip && oldWidget.startTrip) {
-        _mapController.rotate(0.0);
+        try {
+          _mapController.rotate(0.0);
+        } catch (_) {}
         _rotation = 0.0;
       }
     }
@@ -900,7 +920,7 @@ class _ItineraryMapWidgetState extends State<ItineraryMapWidget> {
             maxZoom: 18.0,
             minZoom: 3.0,
             onPositionChanged: (position, hasGesture) {
-              if (hasGesture) {
+              if (hasGesture && mounted && !_disposed) {
                 // Only update rotation state on user gesture, not programmatic moves
                 final newRotation = _mapController.camera.rotation;
                 if ((_rotation - newRotation).abs() > 0.5) {
@@ -961,8 +981,10 @@ class _ItineraryMapWidgetState extends State<ItineraryMapWidget> {
               right: 16,
               child: GestureDetector(
                 onTap: () {
-                  if (!_useMappls) {
-                    _mapController.rotate(0.0);
+                  if (!_useMappls && mounted && !_disposed) {
+                    try {
+                      _mapController.rotate(0.0);
+                    } catch (_) {}
                     setState(() {
                       _rotation = 0.0;
                     });
