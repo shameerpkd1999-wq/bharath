@@ -81,26 +81,37 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
     _compassSubscription = FlutterCompass.events?.listen((CompassEvent event) {
       if (!mounted) return;
       final heading = event.heading;
-      if (heading != null) {
-        final now = DateTime.now();
-        final diff = (heading - lastSentCompassHeading).abs();
-        final timeDiff = now.difference(lastCompassUpdateTime).inMilliseconds;
+      if (heading == null) return;
 
-        // Throttle updates: max once every 300ms and only for meaningful changes > 3 degrees
-        if (lastSentCompassHeading == -999.0 || (diff > 3.0 && timeDiff > 300)) {
-          lastSentCompassHeading = heading;
-          lastCompassUpdateTime = now;
-          _compassHeading = heading;
+      // Filter out unreliable compass readings
+      // accuracy: 0 = unreliable, 1 = low, 2 = medium, 3 = high
+      // If accuracy data is available and too low, skip this reading
+      final accuracy = event.accuracy;
+      if (accuracy != null && accuracy < 15.0) {
+        // Compass accuracy is measured in degrees of error on Android.
+        // accuracy < 15 means the sensor is highly unreliable (needs calibration).
+        // Skip and rely on GPS heading instead.
+        return;
+      }
 
-          // Only update map when stationary and navigation is active
-          if (_startTrip && _userLocation != null && _currentSpeed < 2.0) {
-            setState(() {
-              _userLocation = {
-                ..._userLocation!,
-                'heading': heading,
-              };
-            });
-          }
+      final now = DateTime.now();
+      final diff = (heading - lastSentCompassHeading).abs();
+      final timeDiff = now.difference(lastCompassUpdateTime).inMilliseconds;
+
+      // Throttle: max once every 300ms and only for meaningful changes > 5 degrees
+      if (lastSentCompassHeading == -999.0 || (diff > 5.0 && timeDiff > 300)) {
+        lastSentCompassHeading = heading;
+        lastCompassUpdateTime = now;
+        _compassHeading = heading;
+
+        // Only update map when stationary and navigation is active
+        if (_startTrip && _userLocation != null && _currentSpeed < 2.0) {
+          setState(() {
+            _userLocation = {
+              ..._userLocation!,
+              'heading': heading,
+            };
+          });
         }
       }
     });
@@ -449,7 +460,7 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
           _lastValidHeading = position.heading;
           finalHeading = position.heading;
         } else {
-          finalHeading = _compassHeading;
+          finalHeading = _compassHeading != 0.0 ? _compassHeading : _lastValidHeading;
         }
         setState(() {
           _userLocation = {
@@ -500,8 +511,9 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
               _lastCameraUpdateTime = now;
             }
           } else {
-            // Use compass heading if stationary or speed < 2.0 m/s
-            finalHeading = _compassHeading;
+            // Use compass heading when stationary, but only if compass provided
+            // a recent valid reading (compassHeading != 0). Otherwise keep last GPS heading.
+            finalHeading = _compassHeading != 0.0 ? _compassHeading : _lastValidHeading;
           }
           
           setState(() {
