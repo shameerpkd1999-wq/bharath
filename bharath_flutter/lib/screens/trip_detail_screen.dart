@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:flutter_compass/flutter_compass.dart';
 import '../models/route_step.dart';
 import '../models/trip.dart';
 import '../models/waypoint.dart';
@@ -43,6 +44,9 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
   List<RouteStep> _routeSteps = [];
   Map<String, double>? _userLocation;
   StreamSubscription<Position>? _positionStreamSubscription;
+  StreamSubscription<CompassEvent>? _compassSubscription;
+  double _compassHeading = 0.0;
+  double _currentSpeed = 0.0;
   double _lastValidHeading = 0.0;
   DateTime _lastCameraUpdateTime = DateTime.fromMillisecondsSinceEpoch(0);
 
@@ -56,15 +60,48 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
   @override
   void initState() {
     super.initState();
+    _initCompassListener();
     _loadDetails();
   }
 
   @override
   void dispose() {
     _positionStreamSubscription?.cancel();
+    _compassSubscription?.cancel();
     _searchController.dispose();
     _debounceTimer?.cancel();
     super.dispose();
+  }
+
+  void _initCompassListener() {
+    double lastSentCompassHeading = -999.0;
+    DateTime lastCompassUpdateTime = DateTime.fromMillisecondsSinceEpoch(0);
+
+    _compassSubscription = FlutterCompass.events?.listen((CompassEvent event) {
+      if (!mounted) return;
+      final heading = event.heading;
+      if (heading != null) {
+        final now = DateTime.now();
+        final diff = (heading - lastSentCompassHeading).abs();
+        final timeDiff = now.difference(lastCompassUpdateTime).inMilliseconds;
+
+        // Throttle updates to max once every 250ms and ignore tiny changes < 2 degrees
+        if (lastSentCompassHeading == -999.0 || (diff > 2.0 && timeDiff > 250)) {
+          lastSentCompassHeading = heading;
+          lastCompassUpdateTime = now;
+
+          setState(() {
+            _compassHeading = heading;
+            if (_userLocation != null && _currentSpeed < 2.0) {
+              _userLocation = {
+                ..._userLocation!,
+                'heading': heading,
+              };
+            }
+          });
+        }
+      }
+    });
   }
 
   Future<void> _loadDetails() async {
@@ -150,11 +187,16 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
         desiredAccuracy: LocationAccuracy.high,
       );
       if (!mounted) return;
+
+      double initialHeading = _compassHeading != 0.0 
+          ? _compassHeading 
+          : (position.heading != 0.0 ? position.heading : 0.0);
+
       setState(() {
         _userLocation = {
           'lat': position.latitude,
           'lng': position.longitude,
-          'heading': position.heading,
+          'heading': initialHeading,
         };
       });
       await _arrangeWaypointsByDistance(autoSort: true);
@@ -393,15 +435,19 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
         final position = await Geolocator.getCurrentPosition(
           desiredAccuracy: LocationAccuracy.high,
         );
+        _currentSpeed = position.speed;
         double finalHeading = position.heading;
-        if (position.heading != 0.0) {
+        if (position.speed >= 2.0 && position.heading != 0.0) {
           _lastValidHeading = position.heading;
+          finalHeading = position.heading;
+        } else {
+          finalHeading = _compassHeading;
         }
         setState(() {
           _userLocation = {
             'lat': position.latitude,
             'lng': position.longitude,
-            'heading': finalHeading != 0.0 ? finalHeading : _lastValidHeading,
+            'heading': finalHeading,
           };
         });
         _calculateRoute();
@@ -420,6 +466,7 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
         (Position position) {
           if (!mounted) return;
           
+          _currentSpeed = position.speed;
           double finalHeading = _lastValidHeading;
           final now = DateTime.now();
 
@@ -443,6 +490,9 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
               _lastValidHeading = smoothedHeading;
               _lastCameraUpdateTime = now;
             }
+          } else {
+            // Use compass heading if stationary or speed < 2.0 m/s
+            finalHeading = _compassHeading;
           }
           
           setState(() {
