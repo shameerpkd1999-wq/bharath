@@ -32,7 +32,7 @@ class _CreateTripScreenState extends State<CreateTripScreen> with SingleTickerPr
   // Custom Tab State
   final _customTitleController = TextEditingController();
   final _searchController = TextEditingController();
-  List<Waypoint> _customStops = [];
+  final List<Waypoint> _customStops = [];
   List<Map<String, dynamic>> _suggestions = [];
   bool _searchingSuggestions = false;
 
@@ -95,26 +95,21 @@ class _CreateTripScreenState extends State<CreateTripScreen> with SingleTickerPr
       final Trip trip = res['trip'];
       final List<Waypoint> waypoints = res['waypoints'];
 
-      // Geocode waypoints coordinates in background using geocoding service
+      // Geocode waypoints coordinates in background using geocoding service with fallbacks
+      List<Waypoint> geocodedWaypoints = [];
       for (var wp in waypoints) {
-        final coords = await _routingService.geocodePlace(wp.placeName);
-        if (coords != null) {
-          int index = waypoints.indexOf(wp);
-          waypoints[index] = Waypoint(
-            id: wp.id,
-            placeName: wp.placeName,
-            order: wp.order,
-            durationMin: wp.durationMin,
-            foodSpots: wp.foodSpots,
-            photoPoints: wp.photoPoints,
-            lat: coords['lat']!,
-            lng: coords['lng']!,
-          );
-        }
+        final coords = await _routingService.resolveCoordinates(wp.placeName, _aiPrompt);
+        geocodedWaypoints.add(wp.copyWith(
+          lat: coords['lat']!,
+          lng: coords['lng']!,
+        ));
       }
 
+      // De-duplicate coordinates so that close/identical coordinates are slightly offset
+      final finalWaypoints = _routingService.adjustDuplicateCoordinates(geocodedWaypoints);
+
       // Save to Firebase
-      final tripId = await _firestoreService.saveTrip(trip, waypoints);
+      final tripId = await _firestoreService.saveTrip(trip, finalWaypoints);
 
       if (mounted) {
         _showSnackbar('Itinerary Generated Successfully!');
@@ -266,7 +261,7 @@ class _CreateTripScreenState extends State<CreateTripScreen> with SingleTickerPr
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('New Itinerary', style: TextStyle(fontWeight: FontWeight.black, fontSize: 18)),
+        title: const Text('New Itinerary', style: TextStyle(fontWeight: FontWeight.w900, fontSize: 18)),
         bottom: TabBar(
           controller: _tabController,
           indicatorColor: primaryColor,
@@ -290,14 +285,12 @@ class _CreateTripScreenState extends State<CreateTripScreen> with SingleTickerPr
 
   // --- AI ASSISTANT TAB VIEW ---
   Widget _buildAIAssistantTab() {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-
     return SingleChildScrollView(
       padding: const EdgeInsets.all(20),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          const Text('Where are you heading?', style: TextStyle(fontSize: 14, fontWeight: FontWeight.black)),
+          const Text('Where are you heading?', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w900)),
           const SizedBox(height: 8),
           TextField(
             onChanged: (val) => _aiPrompt = val,
@@ -314,7 +307,7 @@ class _CreateTripScreenState extends State<CreateTripScreen> with SingleTickerPr
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
               const Text('Duration', style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
-              Text('$_aiDays Days', style: TextStyle(fontSize: 13, fontWeight: FontWeight.black, color: const Color(0xFF4F46E5))),
+              Text('$_aiDays Days', style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w900, color: Color(0xFF4F46E5))),
             ],
           ),
           Slider(
@@ -371,7 +364,7 @@ class _CreateTripScreenState extends State<CreateTripScreen> with SingleTickerPr
             ),
             child: _aiGenerating
                 ? const SizedBox(height: 20, width: 20, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
-                : const Text('Generate AI Itinerary', style: TextStyle(fontWeight: FontWeight.black, fontSize: 13)),
+                : const Text('Generate AI Itinerary', style: TextStyle(fontWeight: FontWeight.w900, fontSize: 13)),
           ),
         ],
       ),
@@ -401,88 +394,82 @@ class _CreateTripScreenState extends State<CreateTripScreen> with SingleTickerPr
           // Add Stops Search Autocomplete or Paste Maps Links
           const Text('Add Stops (Search or paste Maps link)', style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
           const SizedBox(height: 8),
-          Stack(
-            clipBehavior: Clip.none,
-            children: [
-              TextField(
-                controller: _searchController,
-                onChanged: (val) {
-                  if (val.trim().startsWith('http')) return;
-                  _searchSuggestions(val);
+          TextField(
+            controller: _searchController,
+            onChanged: (val) {
+              if (val.trim().startsWith('http')) return;
+              _searchSuggestions(val);
+            },
+            decoration: InputDecoration(
+              hintText: 'Type place name or paste Google/Mappls link...',
+              border: OutlineInputBorder(borderRadius: BorderRadius.circular(16)),
+              prefixIcon: const Icon(Icons.add_location_alt_outlined),
+              suffixIcon: IconButton(
+                icon: const Icon(Icons.input),
+                onPressed: () {
+                  final txt = _searchController.text.trim();
+                  if (txt.startsWith('http')) {
+                    _importMapLink(txt);
+                  }
                 },
-                decoration: InputDecoration(
-                  hintText: 'Type place name or paste Google/Mappls link...',
-                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(16)),
-                  prefixIcon: const Icon(Icons.add_location_alt_outlined),
-                  suffixIcon: IconButton(
-                    icon: const Icon(Icons.input),
-                    onPressed: () {
-                      final txt = _searchController.text.trim();
-                      if (txt.startsWith('http')) {
-                        _importMapLink(txt);
-                      }
+              ),
+            ),
+          ),
+
+          // Autocomplete suggestions list
+          if (_searchingSuggestions)
+            const Padding(
+              padding: EdgeInsets.only(top: 8.0),
+              child: Card(
+                child: Padding(
+                  padding: EdgeInsets.all(12.0),
+                  child: Row(
+                    children: [
+                      SizedBox(
+                        height: 16,
+                        width: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      ),
+                      SizedBox(width: 12),
+                      Text('Searching suggestions...', style: TextStyle(fontSize: 11)),
+                    ],
+                  ),
+                ),
+              ),
+            )
+          else if (_suggestions.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(top: 8.0),
+              child: Card(
+                elevation: 4,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxHeight: 180),
+                  child: ListView.builder(
+                    shrinkWrap: true,
+                    padding: EdgeInsets.zero,
+                    itemCount: _suggestions.length,
+                    itemBuilder: (context, index) {
+                      final item = _suggestions[index];
+                      return ListTile(
+                        leading: const Icon(Icons.map, size: 16),
+                        title: Text(
+                          item['display_name'].toString().split(',')[0],
+                          style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+                        ),
+                        subtitle: Text(
+                          item['display_name'],
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(fontSize: 9),
+                        ),
+                        onTap: () => _addStopFromSuggestion(item),
+                      );
                     },
                   ),
                 ),
               ),
-
-              // Autocomplete overlay list
-              if (_searchingSuggestions)
-                Positioned(
-                  top: 60,
-                  left: 0,
-                  right: 0,
-                  zIndex: 10,
-                  child: Card(
-                    child: Padding(
-                      padding: const EdgeInsets.all(12.0),
-                      child: Row(
-                        children: const [
-                          CircularProgressIndicator(strokeWidth: 2),
-                          SizedBox(width: 12),
-                          Text('Searching suggestions...', style: TextStyle(fontSize: 11)),
-                        ],
-                      ),
-                    ),
-                  ),
-                )
-              else if (_suggestions.isNotEmpty)
-                Positioned(
-                  top: 60,
-                  left: 0,
-                  right: 0,
-                  zIndex: 10,
-                  child: Card(
-                    elevation: 8,
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                    child: ConstrainedBox(
-                      constraints: const BoxConstraints(maxHeight: 180),
-                      child: ListView.builder(
-                        shrinkWrap: true,
-                        itemCount: _suggestions.length,
-                        itemBuilder: (context, index) {
-                          final item = _suggestions[index];
-                          return ListTile(
-                            leading: const Icon(Icons.map, size: 16),
-                            title: Text(
-                              item['display_name'].toString().split(',')[0],
-                              style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
-                            ),
-                            subtitle: Text(
-                              item['display_name'],
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(fontSize: 9),
-                            ),
-                            onTap: () => _addStopFromSuggestion(item),
-                          );
-                        },
-                      ),
-                    ),
-                  ),
-                ),
-            ],
-          ),
+            ),
           const SizedBox(height: 24),
 
           // Route Timeline List
@@ -572,7 +559,7 @@ class _CreateTripScreenState extends State<CreateTripScreen> with SingleTickerPr
               padding: const EdgeInsets.symmetric(vertical: 16),
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
             ),
-            child: const Text('Create Custom Route', style: TextStyle(fontWeight: FontWeight.black, fontSize: 13)),
+            child: const Text('Create Custom Route', style: TextStyle(fontWeight: FontWeight.w900, fontSize: 13)),
           ),
         ],
       ),
@@ -631,7 +618,7 @@ class _CreateTripScreenState extends State<CreateTripScreen> with SingleTickerPr
                   image: NetworkImage(preset['url']!),
                   fit: BoxFit.cover,
                   colorFilter: ColorFilter.mode(
-                    Colors.black.withOpacity(isSelected ? 0.3 : 0.5),
+                    Colors.black.withValues(alpha: isSelected ? 0.3 : 0.5),
                     BlendMode.darken,
                   ),
                 ),

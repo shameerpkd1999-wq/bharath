@@ -121,8 +121,9 @@ function getStepInstruction(step: OSRMStep): string {
   return `Continue onto ${street}`
 }
 
+const mapplKey = typeof process !== 'undefined' ? process.env.NEXT_PUBLIC_MAPPLS_SDK_KEY : undefined
+
 export default function ItineraryMap({ waypoints, activeWaypointId, travelMode, onRouteInfoUpdate, onRouteStepsUpdate, startTrip = false }: ItineraryMapProps) {
-  const mapplKey = process.env.NEXT_PUBLIC_MAPPLS_SDK_KEY
   
   // Sizing & engine states (defaults to Leaflet and upgrades if Mappls loads)
   const [mapEngine, setMapEngine] = useState<'leaflet' | 'mappls'>(() => {
@@ -200,56 +201,84 @@ export default function ItineraryMap({ waypoints, activeWaypointId, travelMode, 
     }
 
     const fetchRoute = async () => {
-      const profile = travelMode === 'walking' ? 'foot' : 'driving'
+      const mapplsProfile = travelMode === 'walking' ? 'walking' : travelMode === 'two-wheeler' ? 'biking' : 'driving'
+      const osrmProfile = travelMode === 'walking' ? 'foot' : 'driving'
+
+      let data = null
+      let routeFetched = false
 
       // 1. Try to fetch the entire route in a single request first
-      try {
-        const coordsQuery = validWaypoints.map(wp => `${wp.lng},${wp.lat}`).join(';')
-        const res = await fetch(`https://router.project-osrm.org/route/v1/${profile}/${coordsQuery}?overview=full&geometries=geojson&steps=true`)
-        if (res.ok) {
-          const data = await res.json()
-          if (data && data.code === 'Ok' && data.routes && data.routes.length > 0) {
-            const route = data.routes[0]
-            const routeGeometry = route.geometry.coordinates.map(([lng, lat]: [number, number]) => ({
-              lat,
-              lng
-            }))
-            setDetailedRoute(routeGeometry)
-
-            if (onRouteInfoUpdate) {
-              const distanceKm = route.distance / 1000
-              // Calculate walking time manually at 5 km/h if in walking mode to bypass OSRM demo server speed limitations
-              const durationMin = travelMode === 'walking'
-                ? distanceKm / 5 * 60
-                : route.duration / 60
-              onRouteInfoUpdate({ distanceKm, durationMin })
+      if (mapplKey && mapplKey.trim() !== '') {
+        try {
+          const coordsQuery = validWaypoints.map(wp => `${wp.lng},${wp.lat}`).join(';')
+          const res = await fetch(`https://route.mappls.com/route/direction/route_adv/${mapplsProfile}/${coordsQuery}?access_token=${mapplKey}&overview=full&geometries=geojson&steps=true`)
+          if (res.ok) {
+            const json = await res.json()
+            if (json && json.code === 'Ok' && json.routes && json.routes.length > 0) {
+              data = json
+              routeFetched = true
             }
+          }
+        } catch (err) {
+          console.warn('Mappls single-request route fetch failed, falling back to OSRM:', err)
+        }
+      }
 
-            // Extract steps
-            if (onRouteStepsUpdate) {
-              const steps: RouteStep[] = []
-              if (route.legs && Array.isArray(route.legs)) {
-                route.legs.forEach((leg: OSRMLeg) => {
-                  if (leg.steps && Array.isArray(leg.steps)) {
-                    leg.steps.forEach((step: OSRMStep) => {
-                      steps.push({
-                        instruction: step.maneuver.instruction || getStepInstruction(step),
-                        distanceMeters: step.distance,
-                        durationSeconds: step.duration,
-                        type: step.maneuver.type,
-                        modifier: step.maneuver.modifier
-                      })
-                    })
-                  }
+      // Attempt OSRM Fallback
+      if (!routeFetched) {
+        try {
+          const coordsQuery = validWaypoints.map(wp => `${wp.lng},${wp.lat}`).join(';')
+          const res = await fetch(`https://router.project-osrm.org/route/v1/${osrmProfile}/${coordsQuery}?overview=full&geometries=geojson&steps=true`)
+          if (res.ok) {
+            const json = await res.json()
+            if (json && json.code === 'Ok' && json.routes && json.routes.length > 0) {
+              data = json
+              routeFetched = true
+            }
+          }
+        } catch (err) {
+          console.warn('OSRM single-request route fetch failed:', err)
+        }
+      }
+
+      if (routeFetched && data) {
+        const route = data.routes[0]
+        const routeGeometry = route.geometry.coordinates.map(([lng, lat]: [number, number]) => ({
+          lat,
+          lng
+        }))
+        setDetailedRoute(routeGeometry)
+
+        if (onRouteInfoUpdate) {
+          const distanceKm = route.distance / 1000
+          // Calculate walking time manually at 5 km/h if in walking mode to bypass OSRM demo server speed limitations
+          const durationMin = travelMode === 'walking'
+            ? distanceKm / 5 * 60
+            : route.duration / 60
+          onRouteInfoUpdate({ distanceKm, durationMin })
+        }
+
+        // Extract steps
+        if (onRouteStepsUpdate) {
+          const steps: RouteStep[] = []
+          if (route.legs && Array.isArray(route.legs)) {
+            route.legs.forEach((leg: OSRMLeg) => {
+              if (leg.steps && Array.isArray(leg.steps)) {
+                leg.steps.forEach((step: OSRMStep) => {
+                  steps.push({
+                    instruction: step.maneuver.instruction || getStepInstruction(step),
+                    distanceMeters: step.distance,
+                    durationSeconds: step.duration,
+                    type: step.maneuver.type,
+                    modifier: step.maneuver.modifier
+                  })
                 })
               }
-              onRouteStepsUpdate(steps)
-            }
-            return
+            })
           }
+          onRouteStepsUpdate(steps)
         }
-      } catch (err) {
-        console.warn('Single-request route fetch failed, trying leg-by-leg routing:', err)
+        return
       }
 
       // 2. Fallback to leg-by-leg routing if the single request failed or returned NoRoute
@@ -268,44 +297,72 @@ export default function ItineraryMap({ waypoints, activeWaypointId, travelMode, 
         const end = validWaypoints[i + 1]
         
         const fetchLeg = async (): Promise<LegResult> => {
-          try {
-            const url = `https://router.project-osrm.org/route/v1/${profile}/${start.lng},${start.lat};${end.lng},${end.lat}?overview=full&geometries=geojson&steps=true`
-            const res = await fetch(url)
-            if (res.ok) {
-              const data = await res.json()
-              if (data && data.code === 'Ok' && data.routes && data.routes.length > 0) {
-                const route = data.routes[0]
-                const legSteps: RouteStep[] = []
-                if (route.legs && route.legs[0] && route.legs[0].steps) {
-                  route.legs[0].steps.forEach((step: OSRMStep) => {
-                    legSteps.push({
-                      instruction: step.maneuver.instruction || getStepInstruction(step),
-                      distanceMeters: step.distance,
-                      durationSeconds: step.duration,
-                      type: step.maneuver.type,
-                      modifier: step.maneuver.modifier
-                    })
-                  })
-                }
-                return {
-                  coordinates: route.geometry.coordinates.map(([lng, lat]: [number, number]) => ({
-                    lat,
-                    lng
-                  })),
-                  distance: route.distance,
-                  duration: route.duration,
-                  steps: legSteps
+          let legData = null
+          let legFetched = false
+
+          // Attempt Mappls REST API for leg-by-leg
+          if (mapplKey && mapplKey.trim() !== '') {
+            try {
+              const url = `https://route.mappls.com/route/direction/route_adv/${mapplsProfile}/${start.lng},${start.lat};${end.lng},${end.lat}?access_token=${mapplKey}&overview=full&geometries=geojson&steps=true`
+              const res = await fetch(url)
+              if (res.ok) {
+                const json = await res.json()
+                if (json && json.code === 'Ok' && json.routes && json.routes.length > 0) {
+                  legData = json
+                  legFetched = true
                 }
               }
+            } catch (err) {
+              console.warn(`Mappls leg-by-leg route fetch failed from ${start.placeName} to ${end.placeName}, falling back to OSRM:`, err)
             }
-          } catch (err) {
-            console.warn(`Failed to fetch route leg from ${start.placeName} to ${end.placeName}:`, err)
+          }
+
+          // Attempt OSRM REST API for leg-by-leg
+          if (!legFetched) {
+            try {
+              const url = `https://router.project-osrm.org/route/v1/${osrmProfile}/${start.lng},${start.lat};${end.lng},${end.lat}?overview=full&geometries=geojson&steps=true`
+              const res = await fetch(url)
+              if (res.ok) {
+                const json = await res.json()
+                if (json && json.code === 'Ok' && json.routes && json.routes.length > 0) {
+                  legData = json
+                  legFetched = true
+                }
+              }
+            } catch (err) {
+              console.warn(`OSRM leg-by-leg route fetch failed from ${start.placeName} to ${end.placeName}:`, err)
+            }
+          }
+
+          if (legFetched && legData) {
+            const route = legData.routes[0]
+            const legSteps: RouteStep[] = []
+            if (route.legs && route.legs[0] && route.legs[0].steps) {
+              route.legs[0].steps.forEach((step: OSRMStep) => {
+                legSteps.push({
+                  instruction: step.maneuver.instruction || getStepInstruction(step),
+                  distanceMeters: step.distance,
+                  durationSeconds: step.duration,
+                  type: step.maneuver.type,
+                  modifier: step.maneuver.modifier
+                })
+              })
+            }
+            return {
+              coordinates: route.geometry.coordinates.map(([lng, lat]: [number, number]) => ({
+                lat,
+                lng
+              })),
+              distance: route.distance,
+              duration: route.duration,
+              steps: legSteps
+            }
           }
           // Fallback to straight line for this segment (approximate distance: Euclidean * 111000 meters)
           const dx = end.lng - start.lng
           const dy = end.lat - start.lat
           const approxDistMeters = Math.sqrt(dx*dx + dy*dy) * 111000
-          const approxDurationSeconds = approxDistMeters / (profile === 'foot' ? 1.4 : 13.8) // 5km/h for walk, 50km/h for drive
+          const approxDurationSeconds = approxDistMeters / (travelMode === 'walking' ? 1.4 : 13.8) // 5km/h for walk, 50km/h for drive
           return {
             coordinates: [
               { lat: start.lat, lng: start.lng },
@@ -647,7 +704,8 @@ export default function ItineraryMap({ waypoints, activeWaypointId, travelMode, 
         opacity: 0.85,
         dashArray: '8, 8',
         lineCap: 'round',
-        lineJoin: 'round'
+        lineJoin: 'round',
+        smoothFactor: 0
       }).addTo(map)
     }
 

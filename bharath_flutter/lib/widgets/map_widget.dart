@@ -1,6 +1,9 @@
+import 'dart:convert';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
+import 'package:webview_flutter/webview_flutter.dart';
 import '../models/waypoint.dart';
 
 class ItineraryMapWidget extends StatefulWidget {
@@ -24,146 +27,805 @@ class ItineraryMapWidget extends StatefulWidget {
 }
 
 class _ItineraryMapWidgetState extends State<ItineraryMapWidget> {
+  // WebView States
+  WebViewController? _webViewController;
+  bool _mapplsLoaded = false;
+  bool _useMappls = true;
+
+  // Leaflet Fallback States
   final MapController _mapController = MapController();
+  double _rotation = 0.0;
+
+  // Read SDK Key from environment with fallback
+  static const String _mapplKey = String.fromEnvironment(
+    'MAPPLS_SDK_KEY',
+    defaultValue: 'aaboszsxkdezjefndyureyrkalhergfwcqot',
+  );
+
+  @override
+  void initState() {
+    super.initState();
+    // Enable Mappls if key is configured and we are running on supported mobile OS
+    _useMappls = _mapplKey.isNotEmpty &&
+        (defaultTargetPlatform == TargetPlatform.android ||
+            defaultTargetPlatform == TargetPlatform.iOS);
+
+    if (_useMappls) {
+      _initWebViewController();
+    }
+  }
+
+  void _initWebViewController() {
+    _webViewController = WebViewController()
+      ..setJavaScriptMode(JavaScriptMode.unrestricted)
+      ..setBackgroundColor(const Color(0x00000000))
+      ..addJavaScriptChannel(
+        'MapplsChannel',
+        onMessageReceived: (JavaScriptMessage message) {
+          try {
+            final data = jsonDecode(message.message);
+            if (data['event'] == 'loaded') {
+              setState(() {
+                _mapplsLoaded = true;
+              });
+              _sendUpdateToWeb();
+            } else if (data['event'] == 'error') {
+              // Fail-safe: Fallback to Leaflet if Mappls script load fails
+              setState(() {
+                _useMappls = false;
+              });
+            }
+          } catch (_) {}
+        },
+      )
+      ..loadHtmlString(_buildHtmlContent(), baseUrl: 'https://bharath-dusky.vercel.app/');
+  }
+
+  Map<String, double> _snapToPolyline(
+    Map<String, double> currentLocation,
+    List<Map<String, double>> polylinePoints,
+  ) {
+    if (polylinePoints.isEmpty) return currentLocation;
+
+    final double pLat = currentLocation['lat']!;
+    final double pLng = currentLocation['lng']!;
+
+    double minDistanceSq = double.infinity;
+    double snappedLat = pLat;
+    double snappedLng = pLng;
+
+    for (int i = 0; i < polylinePoints.length - 1; i++) {
+      final a = polylinePoints[i];
+      final b = polylinePoints[i + 1];
+
+      final double aLat = a['lat']!;
+      final double aLng = a['lng']!;
+      final double bLat = b['lat']!;
+      final double bLng = b['lng']!;
+
+      final double dLat = bLat - aLat;
+      final double dLng = bLng - aLng;
+
+      final double segmentLenSq = dLat * dLat + dLng * dLng;
+
+      double t = 0.0;
+      if (segmentLenSq > 0.0) {
+        t = ((pLat - aLat) * dLat + (pLng - aLng) * dLng) / segmentLenSq;
+        t = t.clamp(0.0, 1.0);
+      }
+
+      final double projLat = aLat + t * dLat;
+      final double projLng = aLng + t * dLng;
+
+      final double distSq = (pLat - projLat) * (pLat - projLat) + (pLng - projLng) * (pLng - projLng);
+
+      if (distSq < minDistanceSq) {
+        minDistanceSq = distSq;
+        snappedLat = projLat;
+        snappedLng = projLng;
+      }
+    }
+
+    // 100 meters threshold in degrees (approx)
+    const double maxSnapDistanceDegrees = 0.0009;
+    const double maxSnapDistanceDegreesSq = maxSnapDistanceDegrees * maxSnapDistanceDegrees;
+
+    if (minDistanceSq > maxSnapDistanceDegreesSq) {
+      return currentLocation;
+    }
+
+    return {
+      ...currentLocation,
+      'lat': snappedLat,
+      'lng': snappedLng,
+    };
+  }
+
+  Map<String, double>? _getEffectiveUserLocation() {
+    if (widget.userLocation == null) return null;
+    if (widget.startTrip && widget.polylinePoints.isNotEmpty) {
+      return _snapToPolyline(widget.userLocation!, widget.polylinePoints);
+    }
+    return widget.userLocation;
+  }
+
+  Map<String, List<Map<String, double>>> _splitPolyline(
+    Map<String, double> snappedLocation,
+    List<Map<String, double>> polylinePoints,
+  ) {
+    if (polylinePoints.isEmpty) {
+      return {'completed': [], 'remaining': []};
+    }
+
+    final double pLat = snappedLocation['lat']!;
+    final double pLng = snappedLocation['lng']!;
+
+    double minDistanceSq = double.infinity;
+    int nearestSegmentIndex = 0;
+    double bestProjLat = pLat;
+    double bestProjLng = pLng;
+
+    for (int i = 0; i < polylinePoints.length - 1; i++) {
+      final a = polylinePoints[i];
+      final b = polylinePoints[i + 1];
+
+      final double aLat = a['lat']!;
+      final double aLng = a['lng']!;
+      final double bLat = b['lat']!;
+      final double bLng = b['lng']!;
+
+      final double dLat = bLat - aLat;
+      final double dLng = bLng - aLng;
+
+      final double segmentLenSq = dLat * dLat + dLng * dLng;
+
+      double t = 0.0;
+      if (segmentLenSq > 0.0) {
+        t = ((pLat - aLat) * dLat + (pLng - aLng) * dLng) / segmentLenSq;
+        t = t.clamp(0.0, 1.0);
+      }
+
+      final double projLat = aLat + t * dLat;
+      final double projLng = aLng + t * dLng;
+
+      final double distSq = (pLat - projLat) * (pLat - projLat) + (pLng - projLng) * (pLng - projLng);
+
+      if (distSq < minDistanceSq) {
+        minDistanceSq = distSq;
+        nearestSegmentIndex = i;
+        bestProjLat = projLat;
+        bestProjLng = projLng;
+      }
+    }
+
+    final snappedPoint = {'lat': bestProjLat, 'lng': bestProjLng};
+
+    final List<Map<String, double>> completed = [];
+    for (int j = 0; j <= nearestSegmentIndex; j++) {
+      completed.add(polylinePoints[j]);
+    }
+    completed.add(snappedPoint);
+
+    final List<Map<String, double>> remaining = [];
+    remaining.add(snappedPoint);
+    for (int j = nearestSegmentIndex + 1; j < polylinePoints.length; j++) {
+      remaining.add(polylinePoints[j]);
+    }
+
+    return {
+      'completed': completed,
+      'remaining': remaining,
+    };
+  }
+
+  void _sendUpdateToWeb() {
+    if (!_mapplsLoaded || _webViewController == null) return;
+
+    final waypointsData = widget.waypoints.map((wp) => {
+      'id': wp.id,
+      'placeName': wp.placeName,
+      'order': wp.order,
+      'lat': wp.lat,
+      'lng': wp.lng,
+    }).toList();
+
+    final polylineData = widget.polylinePoints.map((pt) => {
+      'lat': pt['lat'],
+      'lng': pt['lng'],
+    }).toList();
+
+    final effectiveLocation = _getEffectiveUserLocation();
+    List<Map<String, double>> completedData = [];
+    List<Map<String, double>> remainingData = widget.polylinePoints;
+
+    if (widget.startTrip && effectiveLocation != null && widget.polylinePoints.isNotEmpty) {
+      final split = _splitPolyline(effectiveLocation, widget.polylinePoints);
+      completedData = split['completed']!;
+      remainingData = split['remaining']!;
+    }
+
+    final data = {
+      'waypoints': waypointsData,
+      'polylinePoints': polylineData,
+      'completedPoints': completedData,
+      'remainingPoints': remainingData,
+      'activeWaypointId': widget.activeWaypointId,
+      'userLocation': effectiveLocation,
+      'startTrip': widget.startTrip,
+    };
+
+    final jsonStr = jsonEncode(data);
+    _webViewController?.runJavaScript('updateMap($jsonStr);');
+  }
+
+  void _sendUserLocationUpdate() {
+    final effectiveLocation = _getEffectiveUserLocation();
+    if (!_mapplsLoaded || _webViewController == null || effectiveLocation == null) return;
+
+    List<Map<String, double>> completedData = [];
+    List<Map<String, double>> remainingData = widget.polylinePoints;
+
+    if (widget.startTrip && widget.polylinePoints.isNotEmpty) {
+      final split = _splitPolyline(effectiveLocation, widget.polylinePoints);
+      completedData = split['completed']!;
+      remainingData = split['remaining']!;
+    }
+
+    final data = {
+      'lat': effectiveLocation['lat'],
+      'lng': effectiveLocation['lng'],
+      'heading': effectiveLocation['heading'] ?? 0.0,
+      'startTrip': widget.startTrip,
+      'completedPoints': completedData,
+      'remainingPoints': remainingData,
+    };
+
+    final jsonStr = jsonEncode(data);
+    _webViewController?.runJavaScript('updateUserLocation($jsonStr);');
+  }
 
   @override
   void didUpdateWidget(covariant ItineraryMapWidget oldWidget) {
     super.didUpdateWidget(oldWidget);
-    
-    // Pan to active waypoint if it changes
-    if (widget.activeWaypointId != null && 
-        widget.activeWaypointId != oldWidget.activeWaypointId) {
-      final activeWp = widget.waypoints.firstWhere(
-        (wp) => wp.id == widget.activeWaypointId,
-        orElse: () => Waypoint(id: '', placeName: '', order: 0, durationMin: 0, foodSpots: [], photoPoints: [], lat: 0, lng: 0),
-      );
-      if (activeWp.id.isNotEmpty && activeWp.lat != 0.0) {
-        _mapController.move(LatLng(activeWp.lat, activeWp.lng), 14.0);
+
+    if (_useMappls) {
+      if (_mapplsLoaded) {
+        final waypointsChanged = widget.waypoints != oldWidget.waypoints;
+        final polylineChanged = widget.polylinePoints != oldWidget.polylinePoints;
+        final activeWaypointChanged = widget.activeWaypointId != oldWidget.activeWaypointId;
+        final startTripChanged = widget.startTrip != oldWidget.startTrip;
+
+        if (waypointsChanged || polylineChanged || activeWaypointChanged || startTripChanged) {
+          _sendUpdateToWeb();
+        } else if (widget.userLocation != oldWidget.userLocation && widget.userLocation != null) {
+          _sendUserLocationUpdate();
+        }
+
+        // Pan to active waypoint if it changes
+        if (widget.activeWaypointId != null &&
+            widget.activeWaypointId != oldWidget.activeWaypointId) {
+          _webViewController?.runJavaScript("setActiveWaypoint('${widget.activeWaypointId}');");
+        }
+      }
+    } else {
+      // Leaflet fallback update logic
+      if (widget.activeWaypointId != null &&
+          widget.activeWaypointId != oldWidget.activeWaypointId) {
+        final activeWp = widget.waypoints.firstWhere(
+          (wp) => wp.id == widget.activeWaypointId,
+          orElse: () => Waypoint(id: '', placeName: '', order: 0, durationMin: 0, foodSpots: [], photoPoints: [], lat: 0, lng: 0),
+        );
+        if (activeWp.id.isNotEmpty && activeWp.lat != 0.0) {
+          _mapController.move(LatLng(activeWp.lat, activeWp.lng), 14.0);
+        }
+      }
+
+      // Live Navigation camera tracking & rotation
+      final effectiveLocation = _getEffectiveUserLocation();
+      if (widget.startTrip && effectiveLocation != null) {
+        final double lat = effectiveLocation['lat']!;
+        final double lng = effectiveLocation['lng']!;
+        final double heading = effectiveLocation['heading'] ?? 0.0;
+        
+        _mapController.move(LatLng(lat, lng), 18.0);
+        _mapController.rotate(-heading);
+        _rotation = -heading;
+      } else if (!widget.startTrip && oldWidget.startTrip) {
+        // Reset rotation if navigation was turned off
+        _mapController.rotate(0.0);
+        _rotation = 0.0;
+      }
+    }
+  }
+
+  String _buildHtmlContent() {
+    return '''
+<!DOCTYPE html>
+<html>
+<head>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <style>
+    html, body, #map {
+      margin: 0; padding: 0; width: 100%; height: 100%;
+      background-color: #f1f5f9;
+    }
+    .mappls-marker-label {
+      background: white; border: 2.5px solid #4F46E5;
+      border-radius: 50%; width: 26px; height: 26px;
+      display: flex; align-items: center; justify-content: center;
+      color: #4F46E5; font-weight: 900; font-size: 11px;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.15);
+      font-family: system-ui, -apple-system, sans-serif;
+    }
+    .mappls-marker-label.active {
+      background: #4F46E5; color: white;
+    }
+  </style>
+  <script src="https://sdk.mappls.com/map/sdk/web?v=3.0&access_token=$_mapplKey"></script>
+</head>
+<body>
+  <div id="map"></div>
+  <script>
+    let map = null;
+    let markers = {};
+    let routeBackgroundPolyline = null;
+    let routeCompletedPolyline = null;
+    let routeRemainingPolyline = null;
+    let userMarker = null;
+
+    window.onload = function() {
+      if (typeof mappls === 'undefined') {
+        if (window.MapplsChannel) {
+          window.MapplsChannel.postMessage(JSON.stringify({ event: 'error', message: 'Mappls SDK not loaded' }));
+        }
+        return;
+      }
+
+      map = new mappls.Map('map', {
+        center: [20.5937, 78.9629],
+        zoom: 5,
+        zoomControl: false,
+        attributionControl: false
+      });
+
+      map.addListener('load', function() {
+        if (window.MapplsChannel) {
+          window.MapplsChannel.postMessage(JSON.stringify({ event: 'loaded' }));
+        }
+      });
+    };
+
+    function updateMap(data) {
+      if (!map) return;
+
+      if (!data.startTrip) {
+        try {
+          map.setPitch(0);
+          map.setBearing(0);
+        } catch (e) {}
+      }
+
+      // Clear previous markers
+      for (let id in markers) {
+        if (markers[id] && markers[id].remove) markers[id].remove();
+      }
+      markers = {};
+
+      // Clear previous polylines
+      if (routeBackgroundPolyline && routeBackgroundPolyline.remove) {
+        routeBackgroundPolyline.remove();
+        routeBackgroundPolyline = null;
+      }
+      if (routeCompletedPolyline && routeCompletedPolyline.remove) {
+        routeCompletedPolyline.remove();
+        routeCompletedPolyline = null;
+      }
+      if (routeRemainingPolyline && routeRemainingPolyline.remove) {
+        routeRemainingPolyline.remove();
+        routeRemainingPolyline = null;
+      }
+
+      const coords = [];
+
+      // 1. Add Waypoint Markers
+      const waypoints = data.waypoints || [];
+      const activeWaypointId = data.activeWaypointId;
+
+      waypoints.forEach(wp => {
+        if (wp.lat && wp.lng) {
+          const latLng = { lat: wp.lat, lng: wp.lng };
+          coords.push([wp.lng, wp.lat]);
+
+          const isActive = wp.id === activeWaypointId;
+
+          const markerHtml = '<div class="mappls-marker-label' + (isActive ? ' active' : '') + '">' + wp.order + '</div>';
+
+          const marker = new mappls.Marker({
+            map: map,
+            position: latLng,
+            html: markerHtml,
+            width: 26,
+            height: 26
+          });
+
+          markers[wp.id] = marker;
+        }
+      });
+
+      // 2. Add Route Polylines
+      const completedPoints = data.completedPoints || [];
+      const remainingPoints = data.remainingPoints || [];
+      const polylinePoints = data.polylinePoints || [];
+
+      if (polylinePoints.length > 0) {
+        polylinePoints.forEach(pt => coords.push([pt.lng, pt.lat]));
+
+        // Background polyline (border outline)
+        const backgroundPath = polylinePoints.map(pt => ({ lat: pt.lat, lng: pt.lng }));
+        routeBackgroundPolyline = new mappls.Polyline({
+          map: map,
+          paths: backgroundPath,
+          strokeColor: '#94A3B8',
+          strokeWeight: 8,
+          strokeOpacity: 0.4
+        });
+
+        // Completed (traveled) polyline
+        if (completedPoints.length > 0) {
+          const completedPath = completedPoints.map(pt => ({ lat: pt.lat, lng: pt.lng }));
+          routeCompletedPolyline = new mappls.Polyline({
+            map: map,
+            paths: completedPath,
+            strokeColor: '#D0D0D0',
+            strokeWeight: 5,
+            strokeOpacity: 0.9
+          });
+        }
+
+        // Remaining polyline
+        const remainingPath = (remainingPoints.length > 0 ? remainingPoints : polylinePoints)
+            .map(pt => ({ lat: pt.lat, lng: pt.lng }));
+        routeRemainingPolyline = new mappls.Polyline({
+          map: map,
+          paths: remainingPath,
+          strokeColor: '#4F46E5',
+          strokeWeight: 5,
+          strokeOpacity: 0.9
+        });
+      }
+
+      // 3. Add User Location Marker
+      const userLoc = data.userLocation;
+      if (userLoc && userLoc.lat && userLoc.lng) {
+        const userLatLng = { lat: userLoc.lat, lng: userLoc.lng };
+        coords.push([userLoc.lng, userLoc.lat]);
+
+        if (userMarker && userMarker.remove) {
+          userMarker.remove();
+        }
+
+        const heading = userLoc.heading || 0;
+        let userMarkerHtml;
+        if (data.startTrip && userLoc.heading !== undefined) {
+          userMarkerHtml = '<div style="transform: rotate(' + heading + 'deg); display: flex; align-items: center; justify-content: center; width: 24px; height: 24px;"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M12 2L4.5 20.29L5.21 21L12 18L18.79 21L19.5 20.29L12 2Z" fill="#3B82F6" stroke="white" stroke-width="2" stroke-linejoin="round"/></svg></div>';
+        } else {
+          userMarkerHtml = '<div style="width: 14px; height: 14px; border-radius: 50%; background-color: #0284c7; border: 2px solid white; box-shadow: 0 0 6px #0284c7;"></div>';
+        }
+
+        userMarker = new mappls.Marker({
+          map: map,
+          position: userLatLng,
+          html: userMarkerHtml,
+          width: 24,
+          height: 24
+        });
+
+        // 4. Update camera position, zoom, tilt (pitch) and bearing for active navigation
+        if (data.startTrip) {
+          try {
+            map.easeTo({
+              center: [userLatLng.lng, userLatLng.lat],
+              zoom: 18,
+              pitch: 50,
+              bearing: heading,
+              duration: 500,
+              easing: function(t) { return t; }
+            });
+          } catch (e) {
+            console.error("Camera navigation error", e);
+          }
+        }
+      } else {
+        if (userMarker && userMarker.remove) {
+          userMarker.remove();
+          userMarker = null;
+        }
+      }
+
+      // 5. Fit Bounds (only if not in active navigation mode)
+      if (coords.length > 0 && !data.startTrip) {
+        try {
+          map.setPitch(0);
+          map.setBearing(0);
+          new mappls.fitBounds({
+            map: map,
+            bounds: coords,
+            options: {
+              padding: 50,
+              duration: 800
+            }
+          });
+        } catch (e) {
+          console.error("fitBounds error", e);
+        }
       }
     }
 
-    // Pan to user location if startTrip turns true
-    if (widget.startTrip && !oldWidget.startTrip && widget.userLocation != null) {
-      _mapController.move(
-        LatLng(widget.userLocation!['lat']!, widget.userLocation!['lng']!), 
-        15.0
-      );
+    function updateUserLocation(data) {
+      if (!map) return;
+      
+      const userLatLng = { lat: data.lat, lng: data.lng };
+      
+      if (userMarker) {
+        try {
+          if (userMarker.setPosition) {
+            userMarker.setPosition(userLatLng);
+          } else if (userMarker.setLngLat) {
+            userMarker.setLngLat([data.lng, data.lat]);
+          }
+          
+          if (userMarker.getElement) {
+            const heading = data.heading || 0;
+            let innerHtml;
+            if (data.startTrip) {
+              innerHtml = '<div style="transform: rotate(' + heading + 'deg); display: flex; align-items: center; justify-content: center; width: 24px; height: 24px;"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M12 2L4.5 20.29L5.21 21L12 18L18.79 21L19.5 20.29L12 2Z" fill="#3B82F6" stroke="white" stroke-width="2" stroke-linejoin="round"/></svg></div>';
+            } else {
+              innerHtml = '<div style="width: 14px; height: 14px; border-radius: 50%; background-color: #0284c7; border: 2.5px solid white; box-shadow: 0 0 6px #0284c7;"></div>';
+            }
+            userMarker.getElement().innerHTML = innerHtml;
+          }
+        } catch (e) {
+          if (userMarker.remove) userMarker.remove();
+          userMarker = null;
+        }
+      }
+
+      if (!userMarker) {
+        const heading = data.heading || 0;
+        let userMarkerHtml;
+        if (data.startTrip) {
+          userMarkerHtml = '<div style="transform: rotate(' + heading + 'deg); display: flex; align-items: center; justify-content: center; width: 24px; height: 24px;"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M12 2L4.5 20.29L5.21 21L12 18L18.79 21L19.5 20.29L12 2Z" fill="#3B82F6" stroke="white" stroke-width="2" stroke-linejoin="round"/></svg></div>';
+        } else {
+          userMarkerHtml = '<div style="width: 14px; height: 14px; border-radius: 50%; background-color: #0284c7; border: 2.5px solid white; box-shadow: 0 0 6px #0284c7;"></div>';
+        }
+        
+        userMarker = new mappls.Marker({
+          map: map,
+          position: userLatLng,
+          html: userMarkerHtml,
+          width: 24,
+          height: 24
+        });
+      }
+
+      // Update completed & remaining route lines if provided
+      if (data.completedPoints && data.remainingPoints) {
+        if (routeCompletedPolyline && routeCompletedPolyline.remove) {
+          routeCompletedPolyline.remove();
+          routeCompletedPolyline = null;
+        }
+        if (routeRemainingPolyline && routeRemainingPolyline.remove) {
+          routeRemainingPolyline.remove();
+          routeRemainingPolyline = null;
+        }
+
+        if (data.completedPoints.length > 0) {
+          const completedPath = data.completedPoints.map(pt => ({ lat: pt.lat, lng: pt.lng }));
+          routeCompletedPolyline = new mappls.Polyline({
+            map: map,
+            paths: completedPath,
+            strokeColor: '#D0D0D0',
+            strokeWeight: 5,
+            strokeOpacity: 0.9
+          });
+        }
+
+        if (data.remainingPoints.length > 0) {
+          const remainingPath = data.remainingPoints.map(pt => ({ lat: pt.lat, lng: pt.lng }));
+          routeRemainingPolyline = new mappls.Polyline({
+            map: map,
+            paths: remainingPath,
+            strokeColor: '#4F46E5',
+            strokeWeight: 5,
+            strokeOpacity: 0.9
+          });
+        }
+      }
+
+      if (data.startTrip) {
+        try {
+          map.easeTo({
+            center: [data.lng, data.lat],
+            zoom: 18,
+            pitch: 50,
+            bearing: data.heading || 0,
+            duration: 500,
+            easing: function(t) { return t; }
+          });
+        } catch (e) {
+          console.error("Camera easeTo error", e);
+        }
+      } else {
+        try {
+          map.setPitch(0);
+          map.setBearing(0);
+        } catch (e) {}
+      }
     }
+
+    function setActiveWaypoint(wpId) {
+      if (!map) return;
+      const marker = markers[wpId];
+      if (marker && marker.getPosition) {
+        map.panTo(marker.getPosition());
+      }
+    }
+  </script>
+</body>
+</html>
+''';
   }
 
   @override
   Widget build(BuildContext context) {
-    // 1. Build Route Polyline Points
-    final List<LatLng> routePoints = widget.polylinePoints.map((pt) {
-      return LatLng(pt['lat']!, pt['lng']!);
-    }).toList();
+    Widget mapContent;
 
-    // 2. Build Markers
-    final List<Marker> markers = [];
+    if (_useMappls && _webViewController != null) {
+      mapContent = WebViewWidget(controller: _webViewController!);
+    } else {
+      // Leaflet Fallback View
+      LatLng initialCenter = const LatLng(20.5937, 78.9629);
+      double initialZoom = 5.0;
 
-    // User Location Marker
-    if (widget.userLocation != null) {
-      markers.add(
-        Marker(
-          point: LatLng(widget.userLocation!['lat']!, widget.userLocation!['lng']!),
-          width: 30,
-          height: 30,
-          child: Stack(
-            alignment: Alignment.center,
-            children: [
-              Container(
-                width: 28,
-                height: 28,
-                decoration: BoxDecoration(
-                  color: Colors.skyBlue.withOpacity(0.35),
-                  shape: BoxShape.circle,
-                ),
-              ),
-              Container(
-                width: 12,
-                height: 12,
-                decoration: const BoxDecoration(
-                  color: Colors.skyBlue,
-                  shape: BoxShape.circle,
-                  border: Border.fromBorderSide(
-                    BorderSide(color: Colors.white, width: 2.0),
-                  ),
-                ),
-              ),
-            ],
+      if (widget.waypoints.isNotEmpty) {
+        final firstValid = widget.waypoints.firstWhere(
+          (wp) => wp.lat != 0.0,
+          orElse: () => Waypoint(id: '', placeName: '', order: 0, durationMin: 0, foodSpots: [], photoPoints: [], lat: 0, lng: 0),
+        );
+        if (firstValid.id.isNotEmpty) {
+          initialCenter = LatLng(firstValid.lat, firstValid.lng);
+          initialZoom = 11.0;
+        }
+      }
+
+      final List<LatLng> routePoints = widget.polylinePoints.map((pt) {
+        return LatLng(pt['lat']!, pt['lng']!);
+      }).toList();
+
+      final effectiveLocation = _getEffectiveUserLocation();
+
+      List<LatLng> completedRoutePoints = [];
+      List<LatLng> remainingRoutePoints = routePoints;
+
+      if (widget.startTrip && effectiveLocation != null && routePoints.isNotEmpty) {
+        final split = _splitPolyline(effectiveLocation, widget.polylinePoints);
+        completedRoutePoints = split['completed']!.map((pt) => LatLng(pt['lat']!, pt['lng']!)).toList();
+        remainingRoutePoints = split['remaining']!.map((pt) => LatLng(pt['lat']!, pt['lng']!)).toList();
+      }
+
+      final List<Marker> markers = [];
+
+      if (effectiveLocation != null) {
+        final double heading = effectiveLocation['heading'] ?? 0.0;
+        final isNavigating = widget.startTrip && effectiveLocation.containsKey('heading');
+
+        markers.add(
+          Marker(
+            point: LatLng(effectiveLocation['lat']!, effectiveLocation['lng']!),
+            width: 40,
+            height: 40,
+            child: Transform.rotate(
+              angle: isNavigating ? heading * (3.141592653589793 / 180) : 0.0,
+              child: isNavigating
+                  ? Center(
+                      child: Icon(
+                        Icons.navigation,
+                        color: Colors.blue.shade600,
+                        size: 28,
+                        shadows: const [
+                          Shadow(
+                            color: Colors.white,
+                            blurRadius: 4,
+                          )
+                        ],
+                      ),
+                    )
+                  : Stack(
+                      alignment: Alignment.center,
+                      children: [
+                        Container(
+                          width: 28,
+                          height: 28,
+                          decoration: BoxDecoration(
+                            color: Colors.lightBlue.withValues(alpha: 0.35),
+                            shape: BoxShape.circle,
+                          ),
+                        ),
+                        Container(
+                          width: 12,
+                          height: 12,
+                          decoration: const BoxDecoration(
+                            color: Colors.lightBlue,
+                            shape: BoxShape.circle,
+                            border: Border.fromBorderSide(
+                              BorderSide(color: Colors.white, width: 2.0),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+            ),
           ),
-        ),
-      );
-    }
+        );
+      }
 
-    // Waypoint Markers
-    for (var wp in widget.waypoints) {
-      if (wp.lat == 0.0 || wp.lng == 0.0) continue;
-      
-      final isActive = wp.id == widget.activeWaypointId;
-      markers.add(
-        Marker(
-          point: LatLng(wp.lat, wp.lng),
-          width: 36,
-          height: 36,
-          child: AnimatedScale(
-            scale: isActive ? 1.15 : 1.0,
-            duration: const Duration(milliseconds: 250),
-            child: Container(
-              alignment: Alignment.center,
-              decoration: BoxDecoration(
-                color: isActive ? const Color(0xFF4F46E5) : Colors.white,
-                shape: BoxShape.circle,
-                border: Border.all(
-                  color: const Color(0xFF4F46E5),
-                  width: 2.5,
+      for (var wp in widget.waypoints) {
+        if (wp.lat == 0.0 || wp.lng == 0.0) continue;
+
+        final isActive = wp.id == widget.activeWaypointId;
+        markers.add(
+          Marker(
+            point: LatLng(wp.lat, wp.lng),
+            width: 36,
+            height: 36,
+            child: AnimatedScale(
+              scale: isActive ? 1.15 : 1.0,
+              duration: const Duration(milliseconds: 250),
+              child: Container(
+                alignment: Alignment.center,
+                decoration: BoxDecoration(
+                  color: isActive ? const Color(0xFF4F46E5) : Colors.white,
+                  shape: BoxShape.circle,
+                  border: Border.all(
+                    color: const Color(0xFF4F46E5),
+                    width: 2.5,
+                  ),
+                  boxShadow: const [
+                    BoxShadow(
+                      color: Colors.black12,
+                      blurRadius: 6,
+                      offset: Offset(0, 3),
+                    )
+                  ],
                 ),
-                boxShadow: const [
-                  BoxShadow(
-                    color: Colors.black12,
-                    blurRadius: 6,
-                    offset: Offset(0, 3),
-                  )
-                ],
-              ),
-              child: Text(
-                '${wp.order}',
-                style: TextStyle(
-                  color: isActive ? Colors.white : const Color(0xFF4F46E5),
-                  fontSize: 12,
-                  fontWeight: FontWeight.black,
+                child: Text(
+                  '${wp.order}',
+                  style: TextStyle(
+                    color: isActive ? Colors.white : const Color(0xFF4F46E5),
+                    fontSize: 12,
+                    fontWeight: FontWeight.w900,
+                  ),
                 ),
               ),
             ),
           ),
-        ),
-      );
-    }
-
-    // Determine initial center
-    LatLng initialCenter = const LatLng(20.5937, 78.9629); // Center of India
-    double initialZoom = 5.0;
-
-    if (widget.waypoints.isNotEmpty) {
-      final firstValid = widget.waypoints.firstWhere(
-        (wp) => wp.lat != 0.0,
-        orElse: () => Waypoint(id: '', placeName: '', order: 0, durationMin: 0, foodSpots: [], photoPoints: [], lat: 0, lng: 0),
-      );
-      if (firstValid.id.isNotEmpty) {
-        initialCenter = LatLng(firstValid.lat, firstValid.lng);
-        initialZoom = 11.0;
+        );
       }
-    }
 
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(24.0),
-      child: FlutterMap(
+      final isDark = Theme.of(context).brightness == Brightness.dark;
+
+      mapContent = FlutterMap(
         mapController: _mapController,
         options: MapOptions(
           initialCenter: initialCenter,
           initialZoom: initialZoom,
           maxZoom: 18.0,
           minZoom: 3.0,
+          onPositionChanged: (position, hasGesture) {
+            setState(() {
+              _rotation = _mapController.camera.rotation;
+            });
+          },
         ),
         children: [
           TileLayer(
@@ -174,18 +836,144 @@ class _ItineraryMapWidgetState extends State<ItineraryMapWidget> {
           if (routePoints.isNotEmpty)
             PolylineLayer(
               polylines: [
+                // 1. Background border outline
                 Polyline(
                   points: routePoints,
+                  color: isDark ? const Color(0x3F000000) : const Color(0x26000000),
+                  strokeWidth: 8.0,
+                ),
+                // 2. Traveled / Completed part
+                if (widget.startTrip && completedRoutePoints.isNotEmpty)
+                  Polyline(
+                    points: completedRoutePoints,
+                    color: const Color(0xFFD0D0D0),
+                    strokeWidth: 5.0,
+                  ),
+                // 3. Remaining / Untraveled part
+                Polyline(
+                  points: remainingRoutePoints,
                   color: const Color(0xFF4F46E5),
-                  strokeWidth: 4.0,
-                  isDotted: true,
-                  borderColor: const Color(0xFF818CF8),
-                  borderStrokeWidth: 1.0,
+                  strokeWidth: 5.0,
                 ),
               ],
             ),
           MarkerLayer(markers: markers),
         ],
+      );
+    }
+
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(24.0),
+      child: Container(
+        color: const Color(0xFFF1F5F9),
+        child: Stack(
+          children: [
+            mapContent,
+            
+            // Premium Floating Compass
+            Positioned(
+              top: 16,
+              right: 16,
+              child: GestureDetector(
+                onTap: () {
+                  if (!_useMappls) {
+                    _mapController.rotate(0.0);
+                    setState(() {
+                      _rotation = 0.0;
+                    });
+                  }
+                },
+                child: AnimatedOpacity(
+                  opacity: _rotation.abs() > 0.1 || _useMappls ? 1.0 : 0.6,
+                  duration: const Duration(milliseconds: 200),
+                  child: Container(
+                    width: 44,
+                    height: 44,
+                    decoration: BoxDecoration(
+                      color: Colors.white.withValues(alpha: 0.9),
+                      shape: BoxShape.circle,
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.black.withValues(alpha: 0.1),
+                          blurRadius: 8,
+                          offset: const Offset(0, 3),
+                        )
+                      ],
+                    ),
+                    child: Center(
+                      child: Transform.rotate(
+                        angle: -_rotation * (3.141592653589793 / 180),
+                        child: Stack(
+                          alignment: Alignment.center,
+                          children: [
+                            Container(
+                              width: 36,
+                              height: 36,
+                              decoration: BoxDecoration(
+                                shape: BoxShape.circle,
+                                border: Border.all(color: const Color(0xFFE2E8F0), width: 1.5),
+                              ),
+                            ),
+                            const Positioned(
+                              top: 4,
+                              child: Text(
+                                'N',
+                                style: TextStyle(
+                                  color: Colors.red,
+                                  fontSize: 9,
+                                  fontWeight: FontWeight.w900,
+                                ),
+                              ),
+                            ),
+                            const Positioned(
+                              bottom: 4,
+                              child: Text(
+                                'S',
+                                style: TextStyle(
+                                  color: Colors.black54,
+                                  fontSize: 7,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            ),
+                            // Compass needle points
+                            Column(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                Container(
+                                  width: 4,
+                                  height: 10,
+                                  decoration: const BoxDecoration(
+                                    color: Colors.red,
+                                    borderRadius: BorderRadius.only(
+                                      topLeft: Radius.circular(2),
+                                      topRight: Radius.circular(2),
+                                    ),
+                                  ),
+                                ),
+                                Container(
+                                  width: 4,
+                                  height: 10,
+                                  decoration: const BoxDecoration(
+                                    color: Colors.black45,
+                                    borderRadius: BorderRadius.only(
+                                      bottomLeft: Radius.circular(2),
+                                      bottomRight: Radius.circular(2),
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }

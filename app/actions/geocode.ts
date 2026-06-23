@@ -200,3 +200,98 @@ export async function reverseGeocode(lat: number, lng: number): Promise<string> 
   }
   return `Location (${lat.toFixed(4)}, ${lng.toFixed(4)})`
 }
+
+function decodeHex(hex: string): string {
+  try {
+    let str = ''
+    for (let i = 0; i < hex.length; i += 2) {
+      str += String.fromCharCode(parseInt(hex.substring(i, i + 2), 16))
+    }
+    return str
+  } catch {
+    return ''
+  }
+}
+
+/**
+ * Server-side keyless resolver for Mappls Pins (eLocs) and Links.
+ */
+export async function fetchPlaceFromMapplsPin(pin: string): Promise<{ placeName: string; address: string; lat: number; lng: number } | null> {
+  try {
+    const url = `https://mappls.com/${pin}`
+    const res = await fetch(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+      },
+      next: { revalidate: 86400 } // Cache for 24h
+    })
+
+    if (!res.ok) return null
+
+    const body = await res.text()
+
+    // 1. Extract place name
+    const ogTitleMatch = body.match(/<meta property="og:title" content="([^"]+)">/)
+    let placeName = ogTitleMatch ? ogTitleMatch[1] : ''
+
+    // 2. Extract address
+    const ogDescMatch = body.match(/<meta property="og:description" content="([^"]+)">/)
+    let address = ogDescMatch ? ogDescMatch[1] : ''
+
+    if (!placeName) {
+      const titleMatch = body.match(/<title>([^<]+)<\/title>/)
+      const title = titleMatch ? titleMatch[1] : ''
+      if (title) {
+        const parts = title.split(',')
+        placeName = parts[0].trim()
+        address = parts.slice(1).join(',').trim()
+      }
+    }
+
+    // 3. Extract coordinates
+    let lat: number | null = null
+    let lng: number | null = null
+
+    // Fallback A: addEditPlace(10.778867,76.473592,...)
+    const editMatch = body.match(/addEditPlace\(\s*(\d+\.\d+)\s*,\s*(\d+\.\d+)\s*,/)
+    if (editMatch) {
+      lat = parseFloat(editMatch[1])
+      lng = parseFloat(editMatch[2])
+    }
+
+    // Fallback B: Decoded still_image hex coordinates
+    if (lat === null || lng === null) {
+      const imgMatch = body.match(/still_image_([a-zA-Z0-9_]+)\.png/)
+      if (imgMatch) {
+        const parts = imgMatch[1].split('_')
+        if (parts.length >= 2) {
+          const latStr = decodeHex(parts[0])
+          const lngStr = decodeHex(parts[1])
+          lat = parseFloat(latStr)
+          lng = parseFloat(lngStr)
+        }
+      }
+    }
+
+    // Fallback C: Any general coordinate pattern
+    if (lat === null || lng === null) {
+      const genericMatch = body.match(/(\d+\.\d+),(\d+\.\d+)/)
+      if (genericMatch) {
+        lat = parseFloat(genericMatch[1])
+        lng = parseFloat(genericMatch[2])
+      }
+    }
+
+    if (lat !== null && lng !== null && !isNaN(lat) && !isNaN(lng)) {
+      return {
+        placeName: placeName || 'Mappls Pin Location',
+        address: address || '',
+        lat,
+        lng
+      }
+    }
+  } catch (err) {
+    console.error('Keyless Mappls resolution failed on web:', err)
+  }
+  return null
+}

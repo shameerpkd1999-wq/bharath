@@ -87,13 +87,11 @@ class _ExploreScreenState extends State<ExploreScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-
     return Scaffold(
       appBar: AppBar(
         title: const Text(
           'Community Feed',
-          style: TextStyle(fontWeight: FontWeight.black, fontSize: 18),
+          style: TextStyle(fontWeight: FontWeight.w900, fontSize: 18),
         ),
         actions: [
           IconButton(
@@ -111,7 +109,7 @@ class _ExploreScreenState extends State<ExploreScreen> {
                       child: Column(
                         mainAxisAlignment: MainAxisAlignment.center,
                         children: [
-                          Icon(Icons.feed_outlined, size: 48, color: Colors.grey.withOpacity(0.5)),
+                          Icon(Icons.feed_outlined, size: 48, color: Colors.grey.withValues(alpha: 0.5)),
                           const SizedBox(height: 12),
                           const Text(
                             'No public itineraries shared yet.',
@@ -196,7 +194,7 @@ class _ExploreScreenState extends State<ExploreScreen> {
                       Container(
                         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
                         decoration: BoxDecoration(
-                          color: const Color(0xFF4F46E5).withOpacity(0.08),
+                          color: const Color(0xFF4F46E5).withValues(alpha: 0.08),
                           borderRadius: BorderRadius.circular(8),
                         ),
                         child: Row(
@@ -207,7 +205,7 @@ class _ExploreScreenState extends State<ExploreScreen> {
                               '${trip.waypoints.length} Stops',
                               style: const TextStyle(
                                 fontSize: 9,
-                                fontWeight: FontWeight.black,
+                                fontWeight: FontWeight.w900,
                                 color: Color(0xFF4F46E5),
                               ),
                             ),
@@ -231,7 +229,7 @@ class _ExploreScreenState extends State<ExploreScreen> {
                     overflow: TextOverflow.ellipsis,
                     style: const TextStyle(
                       fontSize: 14,
-                      fontWeight: FontWeight.black,
+                      fontWeight: FontWeight.w900,
                     ),
                   ),
                   const SizedBox(height: 6),
@@ -255,7 +253,7 @@ class _ExploreScreenState extends State<ExploreScreen> {
                           'CLONE TRIP',
                           style: TextStyle(
                             fontSize: 10,
-                            fontWeight: FontWeight.black,
+                            fontWeight: FontWeight.w900,
                             color: Color(0xFF4F46E5),
                             letterSpacing: 1.0,
                           ),

@@ -61,7 +61,7 @@ class CustomBottomNav extends StatelessWidget {
         padding: const EdgeInsets.symmetric(horizontal: 14.0, vertical: 8.0),
         decoration: BoxDecoration(
           color: isActive 
-              ? activeColor.withOpacity(0.08) 
+              ? activeColor.withValues(alpha: 0.08) 
               : Colors.transparent,
           borderRadius: BorderRadius.circular(16),
         ),
@@ -78,7 +78,7 @@ class CustomBottomNav extends StatelessWidget {
               label,
               style: TextStyle(
                 fontSize: 10,
-                fontWeight: isActive ? FontWeight.extrabold : FontWeight.semibold,
+                fontWeight: isActive ? FontWeight.w800 : FontWeight.w600,
                 color: isActive ? activeColor : inactiveColor,
               ),
             ),

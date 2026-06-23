@@ -111,7 +111,7 @@ class _AuthScreenState extends State<AuthScreen> {
                   'BharatYatra',
                   style: TextStyle(
                     fontSize: 24,
-                    fontWeight: FontWeight.black,
+                    fontWeight: FontWeight.w900,
                     letterSpacing: -0.5,
                   ),
                 ),
@@ -219,9 +219,9 @@ class _AuthScreenState extends State<AuthScreen> {
                           Container(
                             padding: const EdgeInsets.all(12),
                             decoration: BoxDecoration(
-                              color: Colors.red.withOpacity(0.08),
+                              color: Colors.red.withValues(alpha: 0.08),
                               borderRadius: BorderRadius.circular(12),
-                              border: Border.all(color: Colors.red.withOpacity(0.2)),
+                              border: Border.all(color: Colors.red.withValues(alpha: 0.2)),
                             ),
                             child: Row(
                               crossAxisAlignment: CrossAxisAlignment.start,
@@ -344,7 +344,7 @@ class _AuthScreenState extends State<AuthScreen> {
                             style: TextStyle(
                               fontWeight: FontWeight.bold,
                               fontSize: 12,
-                              color: isDark ? Colors.white87 : Colors.black87,
+                              color: isDark ? Colors.white.withValues(alpha: 0.87) : Colors.black87,
                             ),
                           ),
                           style: OutlinedButton.styleFrom(

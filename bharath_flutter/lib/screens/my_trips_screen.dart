@@ -93,13 +93,11 @@ class _MyTripsScreenState extends State<MyTripsScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-
     return Scaffold(
       appBar: AppBar(
         title: const Text(
           'My Saved Trips',
-          style: TextStyle(fontWeight: FontWeight.black, fontSize: 18),
+          style: TextStyle(fontWeight: FontWeight.w900, fontSize: 18),
         ),
         actions: [
           IconButton(
@@ -117,7 +115,7 @@ class _MyTripsScreenState extends State<MyTripsScreen> {
                       child: Column(
                         mainAxisAlignment: MainAxisAlignment.center,
                         children: [
-                          Icon(Icons.card_travel_outlined, size: 48, color: Colors.grey.withOpacity(0.5)),
+                          Icon(Icons.card_travel_outlined, size: 48, color: Colors.grey.withValues(alpha: 0.5)),
                           const SizedBox(height: 12),
                           const Text(
                             'No itineraries saved yet.',
@@ -175,7 +173,7 @@ class _MyTripsScreenState extends State<MyTripsScreen> {
           trip.title,
           maxLines: 1,
           overflow: TextOverflow.ellipsis,
-          style: const TextStyle(fontWeight: FontWeight.black, fontSize: 13),
+          style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 13),
         ),
         subtitle: Column(
           crossAxisAlignment: CrossAxisAlignment.start,

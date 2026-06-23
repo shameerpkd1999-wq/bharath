@@ -1,0 +1,47 @@
+{
+  "project_info": {
+    "project_number": "768348618429",
+    "project_id": "travell-f6077-6d4e5",
+    "storage_bucket": "travell-f6077-6d4e5.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:768348618429:android:86ee11d5cd17502d3101d4",
+        "android_client_info": {
+          "package_name": "com.bharatyatra.bharath_flutter"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "768348618429-f481719euc3j8r8u9rkvp123jk5p2crk.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.bharatyatra.bharath_flutter",
+            "certificate_hash": "8d442634cb86d3d4dd41af3c09cc78d314a2d427"
+          }
+        },
+        {
+          "client_id": "768348618429-v5e5kg1hddcu5c3l83na9h83krtlh88s.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDQ11W6xEv4zgeSJys7d18rj6hhIN35iMQ"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "768348618429-v5e5kg1hddcu5c3l83na9h83krtlh88s.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

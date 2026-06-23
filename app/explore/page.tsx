@@ -1,6 +1,7 @@
 'use client'
 
 import React, { useEffect, useState, useCallback } from 'react'
+import Image from 'next/image'
 import { useRouter } from 'next/navigation'
 import { Compass, Search, Sparkles, MapPin, Copy, CheckCircle2, User } from 'lucide-react'
 import { useAuth } from '@/context/AuthContext'
@@ -380,10 +381,12 @@ export default function ExplorePage() {
               >
                 {/* Cover Banner */}
                 <div className="relative h-40 w-full shrink-0">
-                  <img
+                  <Image
                     src={getCoverImage(tripItem)}
                     alt={tripItem.title}
-                    className="w-full h-full object-cover"
+                    fill
+                    sizes="(max-width: 768px) 100vw, 450px"
+                    className="object-cover"
                   />
                   <div className="absolute top-3 right-3 bg-indigo-600/80 backdrop-blur-md px-2.5 py-1 rounded-full text-[9px] font-extrabold text-white flex items-center gap-1 shadow-sm">
                     <Sparkles className="h-2.5 w-2.5" />

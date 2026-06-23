@@ -1,5 +1,8 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:geolocator/geolocator.dart';
 import '../models/route_step.dart';
 import '../models/trip.dart';
 import '../models/waypoint.dart';
@@ -39,11 +42,29 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
   double _durationMin = 0.0;
   List<RouteStep> _routeSteps = [];
   Map<String, double>? _userLocation;
+  StreamSubscription<Position>? _positionStreamSubscription;
+  double _lastValidHeading = 0.0;
+  DateTime _lastCameraUpdateTime = DateTime.fromMillisecondsSinceEpoch(0);
+
+  // Search and Suggestion State
+  final TextEditingController _searchController = TextEditingController();
+  List<Map<String, dynamic>> _suggestions = [];
+  bool _searchingSuggestions = false;
+  bool _locatingCurrent = false;
+  Timer? _debounceTimer;
 
   @override
   void initState() {
     super.initState();
     _loadDetails();
+  }
+
+  @override
+  void dispose() {
+    _positionStreamSubscription?.cancel();
+    _searchController.dispose();
+    _debounceTimer?.cancel();
+    super.dispose();
   }
 
   Future<void> _loadDetails() async {
@@ -55,7 +76,6 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
     try {
       // 1. Fetch parent trip doc
       final parentDoc = await _firestoreService.getTripWaypoints(widget.tripId);
-      final allTrips = await _firestoreService.getPublicTrips(); // quick helper search
       
       // Fallback: look in user trips
       Trip? matchingTrip;
@@ -68,13 +88,44 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
         }
       } catch (_) {}
 
+      // Self-heal waypoints if they have default, 0.0, or unresolved placeholder coordinates
+      final List<Waypoint> healedWaypoints = [];
+      if (matchingTrip != null) {
+        for (var wp in parentDoc) {
+          final isZeroOrDefault = wp.lat == 0.0 || 
+                                  wp.lng == 0.0 || 
+                                  ((wp.lat - 20.5937).abs() < 0.001 && (wp.lng - 78.9629).abs() < 0.001);
+          if (isZeroOrDefault) {
+            final coords = await _routingService.resolveCoordinates(wp.placeName, matchingTrip.title);
+            final healedWp = wp.copyWith(lat: coords['lat']!, lng: coords['lng']!);
+            healedWaypoints.add(healedWp);
+
+            // Sync healed coordinate back to Firestore in background
+            try {
+              await FirebaseFirestore.instance
+                  .collection('trips')
+                  .doc(widget.tripId)
+                  .collection('waypoints')
+                  .doc(wp.id)
+                  .set({'lat': coords['lat']!, 'lng': coords['lng']!}, SetOptions(merge: true));
+            } catch (_) {}
+          } else {
+            healedWaypoints.add(wp);
+          }
+        }
+      }
+
+      // Always adjust duplicate coordinates in memory to prevent overlap on map
+      final List<Waypoint> finalWaypoints = _routingService.adjustDuplicateCoordinates(healedWaypoints);
+
       setState(() {
-        _trip = matchingTrip;
+        _trip = matchingTrip?.copyWith(waypoints: finalWaypoints);
         _loading = false;
       });
 
       if (_trip != null && _trip!.waypoints.isNotEmpty) {
         _calculateRoute();
+        _initUserLocationAndSort();
       }
     } catch (e) {
       setState(() {
@@ -84,9 +135,200 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
     }
   }
 
+  // Silently check user location and sort stops by distance on load
+  Future<void> _initUserLocationAndSort() async {
+    bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
+    if (!serviceEnabled) return;
+
+    LocationPermission permission = await Geolocator.checkPermission();
+    if (permission == LocationPermission.denied || permission == LocationPermission.deniedForever) {
+      return;
+    }
+
+    try {
+      final position = await Geolocator.getCurrentPosition(
+        desiredAccuracy: LocationAccuracy.high,
+      );
+      if (!mounted) return;
+      setState(() {
+        _userLocation = {
+          'lat': position.latitude,
+          'lng': position.longitude,
+          'heading': position.heading,
+        };
+      });
+      await _arrangeWaypointsByDistance(autoSort: true);
+    } catch (_) {}
+  }
+
+  // Arrange waypoints using nearest neighbor from user's location (TSP)
+  Future<void> _arrangeWaypointsByDistance({bool autoSort = false}) async {
+    if (_trip == null || _trip!.waypoints.isEmpty) return;
+
+    Map<String, double>? startLoc = _userLocation;
+    if (startLoc == null) {
+      try {
+        final position = await Geolocator.getCurrentPosition(
+          desiredAccuracy: LocationAccuracy.high,
+          timeLimit: const Duration(seconds: 4),
+        );
+        startLoc = {
+          'lat': position.latitude,
+          'lng': position.longitude,
+          'heading': position.heading,
+        };
+        setState(() {
+          _userLocation = startLoc;
+        });
+      } catch (_) {}
+    }
+
+    final waypointsCopy = List<Waypoint>.from(_trip!.waypoints);
+
+    if (startLoc != null) {
+      final double userLat = startLoc['lat']!;
+      final double userLng = startLoc['lng']!;
+      // Sort purely by distance from the user's current location, ascending
+      waypointsCopy.sort((a, b) {
+        final distA = (a.lat - userLat) * (a.lat - userLat) + (a.lng - userLng) * (a.lng - userLng);
+        final distB = (b.lat - userLat) * (b.lat - userLat) + (b.lng - userLng) * (b.lng - userLng);
+        return distA.compareTo(distB);
+      });
+    }
+
+    final List<Waypoint> reordered = [];
+    bool orderChanged = false;
+    for (int i = 0; i < waypointsCopy.length; i++) {
+      final order = i + 1;
+      if (waypointsCopy[i].order != order) {
+        orderChanged = true;
+      }
+      reordered.add(waypointsCopy[i].copyWith(order: order));
+    }
+
+    if (!orderChanged && autoSort) {
+      return;
+    }
+
+    setState(() {
+      _trip = _trip!.copyWith(waypoints: reordered);
+      if (reordered.isNotEmpty) {
+        _activeWaypointId = reordered[0].id;
+      }
+    });
+
+    try {
+      final batch = FirebaseFirestore.instance.batch();
+      for (var wp in reordered) {
+        final docRef = FirebaseFirestore.instance
+            .collection('trips')
+            .doc(widget.tripId)
+            .collection('waypoints')
+            .doc(wp.id);
+        batch.set(docRef, {'order': wp.order}, SetOptions(merge: true));
+      }
+      await batch.commit();
+    } catch (e) {
+      debugPrint('Firestore order sync failed: $e');
+    }
+
+    _calculateRoute();
+  }
+
+  // Add waypoint to list & sync to database
+  Future<void> _addWaypoint(String placeName, double lat, double lng) async {
+    if (_trip == null) return;
+
+    final String newWpId = 'wp-${widget.tripId}-${DateTime.now().millisecondsSinceEpoch}';
+    final int newOrder = _trip!.waypoints.length + 1;
+
+    final newWp = Waypoint(
+      id: newWpId,
+      placeName: placeName,
+      order: newOrder,
+      durationMin: 90,
+      foodSpots: [],
+      photoPoints: [],
+      lat: lat,
+      lng: lng,
+    );
+
+    setState(() {
+      final updatedWps = List<Waypoint>.from(_trip!.waypoints)..add(newWp);
+      _trip = _trip!.copyWith(waypoints: updatedWps);
+      _activeWaypointId = newWpId;
+    });
+
+    try {
+      await FirebaseFirestore.instance
+          .collection('trips')
+          .doc(widget.tripId)
+          .collection('waypoints')
+          .doc(newWpId)
+          .set(newWp.toMap());
+    } catch (e) {
+      debugPrint('Firestore add waypoint failed: $e');
+    }
+
+    await _arrangeWaypointsByDistance();
+  }
+
+  // Remove waypoint from list & sync to database
+  Future<void> _removeWaypoint(String wpId) async {
+    if (_trip == null) return;
+
+    final updatedWps = _trip!.waypoints.where((wp) => wp.id != wpId).toList();
+
+    final List<Waypoint> reordered = [];
+    for (int i = 0; i < updatedWps.length; i++) {
+      reordered.add(updatedWps[i].copyWith(order: i + 1));
+    }
+
+    setState(() {
+      _trip = _trip!.copyWith(waypoints: reordered);
+      if (_activeWaypointId == wpId) {
+        _activeWaypointId = reordered.isNotEmpty ? reordered[0].id : null;
+      }
+    });
+
+    try {
+      final batch = FirebaseFirestore.instance.batch();
+      
+      final delRef = FirebaseFirestore.instance
+          .collection('trips')
+          .doc(widget.tripId)
+          .collection('waypoints')
+          .doc(wpId);
+      batch.delete(delRef);
+
+      for (var wp in reordered) {
+        final wpRef = FirebaseFirestore.instance
+            .collection('trips')
+            .doc(widget.tripId)
+            .collection('waypoints')
+            .doc(wp.id);
+        batch.set(wpRef, {'order': wp.order}, SetOptions(merge: true));
+      }
+      
+      await batch.commit();
+    } catch (e) {
+      debugPrint('Firestore waypoint deletion failed: $e');
+    }
+
+    _calculateRoute();
+  }
+
   // Fetch routing updates from OSRM
   Future<void> _calculateRoute() async {
-    if (_trip == null || _trip!.waypoints.length < 2) return;
+    if (_trip == null || _trip!.waypoints.length < 2) {
+      setState(() {
+        _polyline = [];
+        _distanceKm = 0.0;
+        _durationMin = 0.0;
+        _routeSteps = [];
+      });
+      return;
+    }
 
     final routeData = await _routingService.fetchRoute(
       waypoints: _trip!.waypoints,
@@ -105,25 +347,118 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
     }
   }
 
-  // Simulate Geolocation for Demo
-  void _toggleLiveTrip() {
-    setState(() {
-      _startTrip = !_startTrip;
-      if (_startTrip) {
-        // Mock current location near the first waypoint
-        if (_trip != null && _trip!.waypoints.isNotEmpty) {
-          final firstWp = _trip!.waypoints[0];
-          _userLocation = {
-            'lat': firstWp.lat - 0.015, // slightly south-west
-            'lng': firstWp.lng - 0.015,
-          };
-        }
-      } else {
+  // Live GPS Tracking & Permissions
+  Future<void> _toggleLiveTrip() async {
+    if (_startTrip) {
+      // Stopping navigation
+      setState(() {
+        _startTrip = false;
         _userLocation = null;
         _routeSteps = [];
+      });
+      await _positionStreamSubscription?.cancel();
+      _positionStreamSubscription = null;
+      _calculateRoute();
+    } else {
+      // Starting navigation - check permissions & GPS service
+      bool serviceEnabled;
+      LocationPermission permission;
+
+      serviceEnabled = await Geolocator.isLocationServiceEnabled();
+      if (!serviceEnabled) {
+        _showSnackbar('Location services are disabled. Please enable GPS.');
+        return;
       }
-    });
-    _calculateRoute();
+
+      permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.denied) {
+        permission = await Geolocator.requestPermission();
+        if (permission == LocationPermission.denied) {
+          _showSnackbar('Location permission denied.');
+          return;
+        }
+      }
+
+      if (permission == LocationPermission.deniedForever) {
+        _showSnackbar('Location permissions are permanently denied. Please enable in Settings.');
+        return;
+      }
+
+      setState(() {
+        _startTrip = true;
+      });
+
+      // Get initial position
+      try {
+        final position = await Geolocator.getCurrentPosition(
+          desiredAccuracy: LocationAccuracy.high,
+        );
+        double finalHeading = position.heading;
+        if (position.heading != 0.0) {
+          _lastValidHeading = position.heading;
+        }
+        setState(() {
+          _userLocation = {
+            'lat': position.latitude,
+            'lng': position.longitude,
+            'heading': finalHeading != 0.0 ? finalHeading : _lastValidHeading,
+          };
+        });
+        _calculateRoute();
+      } catch (e) {
+        _showSnackbar('Error fetching initial location: $e');
+      }
+
+      // Start listening to live position updates
+      await _positionStreamSubscription?.cancel();
+      _positionStreamSubscription = Geolocator.getPositionStream(
+        locationSettings: const LocationSettings(
+          accuracy: LocationAccuracy.high,
+          distanceFilter: 5, // update when user moves 5 meters for better responsiveness
+        ),
+      ).listen(
+        (Position position) {
+          if (!mounted) return;
+          
+          double finalHeading = _lastValidHeading;
+          final now = DateTime.now();
+
+          // Only rotate when the vehicle is actually moving (speed >= 2.0 m/s) and GPS heading is valid
+          if (position.speed >= 2.0 && position.heading != 0.0) {
+            double diff = (position.heading - _lastValidHeading).abs();
+            if (diff > 180.0) {
+              diff = 360.0 - diff;
+            }
+
+            // Rate-limit updates to 500ms and ignore small angle changes (< 10 degrees)
+            if (diff > 10.0 && now.difference(_lastCameraUpdateTime).inMilliseconds > 500) {
+              double delta = position.heading - _lastValidHeading;
+              if (delta > 180.0) delta -= 360.0;
+              if (delta < -180.0) delta += 360.0;
+
+              double smoothedHeading = _lastValidHeading + delta * 0.2;
+              smoothedHeading = (smoothedHeading + 360.0) % 360.0;
+
+              finalHeading = smoothedHeading;
+              _lastValidHeading = smoothedHeading;
+              _lastCameraUpdateTime = now;
+            }
+          }
+          
+          setState(() {
+            _userLocation = {
+              'lat': position.latitude,
+              'lng': position.longitude,
+              'heading': finalHeading,
+            };
+          });
+          _calculateRoute();
+        },
+        onError: (error) {
+          _showSnackbar('Location tracking error: $error');
+        },
+      );
+    }
   }
 
   // --- REDIRECTION LAUNCHERS ---
@@ -180,8 +515,6 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-    
     if (_loading) {
       return const Scaffold(
         body: Center(child: CircularProgressIndicator(color: Color(0xFF4F46E5))),
@@ -239,7 +572,7 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                         children: [
                           Text(
                             _trip!.title,
-                            style: const TextStyle(fontSize: 18, fontWeight: FontWeight.black),
+                            style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w900),
                           ),
                           const SizedBox(height: 4),
                           Text(
@@ -262,23 +595,50 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                       padding: const EdgeInsets.symmetric(horizontal: 16.0),
                       child: Row(
                         mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: const [
-                          Text('WAYPOINT TIMELINE', style: TextStyle(fontSize: 10, fontWeight: FontWeight.black, letterSpacing: 1.0, color: Colors.grey)),
+                        children: [
+                          const Text('WAYPOINT TIMELINE', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w900, letterSpacing: 1.0, color: Colors.grey)),
+                          if (_trip!.waypoints.length > 2)
+                            TextButton.icon(
+                              onPressed: () => _arrangeWaypointsByDistance(),
+                              icon: const Icon(Icons.auto_awesome, size: 12, color: Color(0xFF4F46E5)),
+                              label: const Text(
+                                'Optimize Route',
+                                style: TextStyle(fontSize: 10, fontWeight: FontWeight.w900, color: Color(0xFF4F46E5)),
+                              ),
+                              style: TextButton.styleFrom(
+                                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                minimumSize: Size.zero,
+                                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                              ),
+                            ),
                         ],
                       ),
                     ),
 
-                    ListView.builder(
-                      shrinkWrap: true,
-                      physics: const NeverScrollableScrollPhysics(),
-                      padding: const EdgeInsets.all(16),
-                      itemCount: _trip!.waypoints.length,
-                      itemBuilder: (context, index) {
-                        final wp = _trip!.waypoints[index];
-                        final isActive = _activeWaypointId == wp.id;
-                        return _buildWaypointCard(context, wp, isActive);
-                      },
-                    ),
+                    if (_trip!.waypoints.isEmpty)
+                      const Padding(
+                        padding: EdgeInsets.all(24.0),
+                        child: Center(
+                          child: Text(
+                            'No waypoints configured for this route.',
+                            style: TextStyle(fontSize: 12, color: Colors.grey, fontWeight: FontWeight.bold),
+                          ),
+                        ),
+                      )
+                    else
+                      ListView.builder(
+                        shrinkWrap: true,
+                        physics: const NeverScrollableScrollPhysics(),
+                        padding: const EdgeInsets.all(16),
+                        itemCount: _trip!.waypoints.length,
+                        itemBuilder: (context, index) {
+                          final wp = _trip!.waypoints[index];
+                          final isActive = _activeWaypointId == wp.id;
+                          return _buildWaypointCard(context, wp, isActive);
+                        },
+                      ),
+
+                    _buildAddStopSection(context),
                   ],
                 ),
               ),
@@ -312,14 +672,14 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                 'TRAVEL MODE',
                 style: TextStyle(
                   fontSize: 9,
-                  fontWeight: FontWeight.black,
+                  fontWeight: FontWeight.w900,
                   color: isDark ? Colors.white60 : Colors.black54,
                 ),
               ),
               if (_distanceKm > 0.0)
                 Text(
                   '${_distanceKm.toStringAsFixed(1)} km • ${_formatDuration(_durationMin)}',
-                  style: const TextStyle(fontSize: 10, fontWeight: FontWeight.black, color: Color(0xFF4F46E5)),
+                  style: const TextStyle(fontSize: 10, fontWeight: FontWeight.w900, color: Color(0xFF4F46E5)),
                 ),
             ],
           ),
@@ -408,8 +768,17 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
   }
 
   Widget _buildWaypointCard(BuildContext context, Waypoint wp, bool isActive) {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-    
+    double? distanceInKm;
+    if (_userLocation != null && wp.lat != 0.0 && wp.lng != 0.0) {
+      final double meters = Geolocator.distanceBetween(
+        _userLocation!['lat']!,
+        _userLocation!['lng']!,
+        wp.lat,
+        wp.lng,
+      );
+      distanceInKm = meters / 1000.0;
+    }
+
     return Card(
       margin: const EdgeInsets.only(bottom: 12),
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
@@ -423,11 +792,24 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
         ),
         title: Text(
           wp.placeName.split(',')[0],
-          style: const TextStyle(fontWeight: FontWeight.black, fontSize: 13),
+          style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 13),
         ),
         subtitle: Text(
-          'Stop duration: ${wp.durationMin} mins',
+          'Stop duration: ${wp.durationMin} mins${distanceInKm != null ? ' • ${distanceInKm.toStringAsFixed(1)} km from you' : ''}',
           style: const TextStyle(fontSize: 10, color: Colors.grey),
+        ),
+        trailing: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            IconButton(
+              icon: const Icon(Icons.delete_outline, color: Colors.redAccent, size: 18),
+              onPressed: () {
+                _removeWaypoint(wp.id);
+              },
+              tooltip: 'Remove stop',
+            ),
+            const Icon(Icons.expand_more),
+          ],
         ),
         onExpansionChanged: (expanded) {
           if (expanded) {
@@ -448,7 +830,7 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                     children: wp.foodSpots.map((food) {
                       return Chip(
                         label: Text(food, style: const TextStyle(fontSize: 9, fontWeight: FontWeight.bold)),
-                        backgroundColor: Colors.emerald.shade50,
+                        backgroundColor: Colors.green.shade50,
                         side: BorderSide.none,
                       );
                     }).toList(),
@@ -476,6 +858,304 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
               ],
             ),
           )
+        ],
+      ),
+    );
+  }
+
+  void _onSearchChanged(String query) {
+    if (_debounceTimer?.isActive ?? false) _debounceTimer!.cancel();
+    
+    final trimmed = query.trim();
+    if (trimmed.length < 3) {
+      setState(() {
+        _suggestions = [];
+      });
+      return;
+    }
+
+    final urlRegex = RegExp(r'mappls\.com\/(?:pin\/)?([A-Za-z0-9]{6})', caseSensitive: false);
+    final pinRegex = RegExp(r'^[A-Za-z0-9]{6}$');
+
+    _debounceTimer = Timer(const Duration(milliseconds: 400), () async {
+      setState(() {
+        _searchingSuggestions = true;
+      });
+      try {
+        if (urlRegex.hasMatch(trimmed) || pinRegex.hasMatch(trimmed)) {
+          final String pin = urlRegex.hasMatch(trimmed)
+              ? urlRegex.firstMatch(trimmed)!.group(1)!
+              : trimmed;
+          final details = await _routingService.fetchPlaceFromPin(pin);
+          if (details != null && mounted) {
+            setState(() {
+              _suggestions = [
+                {
+                  'display_name': '${details['placeName']}, ${details['address']}',
+                  'lat': details['lat'],
+                  'lon': details['lng'],
+                }
+              ];
+              _searchingSuggestions = false;
+            });
+            return;
+          }
+        }
+
+        final suggestions = await _routingService.getPlaceSuggestions(query);
+        setState(() {
+          _suggestions = suggestions;
+          _searchingSuggestions = false;
+        });
+      } catch (_) {
+        setState(() {
+          _searchingSuggestions = false;
+        });
+      }
+    });
+  }
+
+  Future<void> _handleAddCurrentLocation() async {
+    bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
+    if (!serviceEnabled) {
+      _showSnackbar('Location services are disabled.');
+      return;
+    }
+
+    LocationPermission permission = await Geolocator.checkPermission();
+    if (permission == LocationPermission.denied) {
+      permission = await Geolocator.requestPermission();
+      if (permission == LocationPermission.denied) {
+        _showSnackbar('Location permission denied.');
+        return;
+      }
+    }
+
+    setState(() {
+      _locatingCurrent = true;
+    });
+
+    try {
+      final position = await Geolocator.getCurrentPosition(
+        desiredAccuracy: LocationAccuracy.high,
+      );
+      
+      final address = await _routingService.reverseGeocode(position.latitude, position.longitude);
+      final shortName = address.split(',')[0];
+      
+      await _addWaypoint(shortName, position.latitude, position.longitude);
+    } catch (e) {
+      _showSnackbar('Failed to retrieve current location: $e');
+    } finally {
+      setState(() {
+        _locatingCurrent = false;
+      });
+    }
+  }
+
+  Future<void> _handleAddManualStop() async {
+    final name = _searchController.text.trim();
+    if (name.isEmpty) return;
+
+    setState(() {
+      _searchingSuggestions = true;
+    });
+
+    final urlRegex = RegExp(r'mappls\.com\/(?:pin\/)?([A-Za-z0-9]{6})', caseSensitive: false);
+    final pinRegex = RegExp(r'^[A-Za-z0-9]{6}$');
+
+    try {
+      if (urlRegex.hasMatch(name) || pinRegex.hasMatch(name)) {
+        final String pin = urlRegex.hasMatch(name)
+            ? urlRegex.firstMatch(name)!.group(1)!
+            : name;
+        final details = await _routingService.fetchPlaceFromPin(pin);
+        if (details != null) {
+          await _addWaypoint(details['placeName']!, details['lat']!, details['lng']!);
+          _searchController.clear();
+          setState(() {
+            _suggestions = [];
+            _searchingSuggestions = false;
+          });
+          return;
+        }
+      }
+
+      final coords = await _routingService.geocodePlace(name);
+      if (coords != null) {
+        await _addWaypoint(name, coords['lat']!, coords['lng']!);
+      } else {
+        await _addWaypoint(name, 20.5937, 78.9629);
+      }
+      _searchController.clear();
+      setState(() {
+        _suggestions = [];
+        _searchingSuggestions = false;
+      });
+    } catch (_) {
+      await _addWaypoint(name, 20.5937, 78.9629);
+      _searchController.clear();
+      setState(() {
+        _suggestions = [];
+        _searchingSuggestions = false;
+      });
+    }
+  }
+
+  Widget _buildAddStopSection(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    
+    return Container(
+      margin: const EdgeInsets.fromLTRB(16, 0, 16, 24),
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: isDark ? const Color(0xFF0F172A) : Colors.white,
+        borderRadius: BorderRadius.circular(24),
+        border: Border.all(
+          color: isDark ? const Color(0xFF1E293B) : const Color(0xFFF1F5F9),
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          const Row(
+            children: [
+              Icon(Icons.add_location_alt_outlined, size: 16, color: Color(0xFF4F46E5)),
+              SizedBox(width: 8),
+              Text(
+                'ADD NEW SPOT',
+                style: TextStyle(
+                  fontSize: 10,
+                  fontWeight: FontWeight.w900,
+                  color: Colors.grey,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  controller: _searchController,
+                  onChanged: _onSearchChanged,
+                  style: const TextStyle(fontSize: 12),
+                  decoration: InputDecoration(
+                    hintText: 'Search and add a place...',
+                    prefixIcon: const Icon(Icons.search, size: 16),
+                    contentPadding: const EdgeInsets.symmetric(vertical: 8),
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12),
+                      borderSide: BorderSide(
+                        color: isDark ? const Color(0xFF1E293B) : Colors.grey.shade200,
+                      ),
+                    ),
+                    enabledBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12),
+                      borderSide: BorderSide(
+                        color: isDark ? const Color(0xFF1E293B) : Colors.grey.shade200,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              IconButton(
+                onPressed: _handleAddCurrentLocation,
+                icon: _locatingCurrent
+                    ? const SizedBox(
+                        height: 16,
+                        width: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF4F46E5)),
+                      )
+                    : const Icon(Icons.my_location, size: 18, color: Color(0xFF4F46E5)),
+                style: IconButton.styleFrom(
+                  backgroundColor: isDark ? const Color(0xFF1E293B) : Colors.grey.shade100,
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                  padding: const EdgeInsets.all(10),
+                ),
+                tooltip: 'Use current location',
+              ),
+              const SizedBox(width: 8),
+              ElevatedButton(
+                onPressed: _handleAddManualStop,
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF4F46E5),
+                  foregroundColor: Colors.white,
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                ),
+                child: const Text('Add', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Text(
+            'Search place, Mappls Pin, or paste a Mappls link (e.g. 0mxcrz or mappls.com/0mxcrz)',
+            style: TextStyle(
+              fontSize: 9,
+              color: isDark ? Colors.white54 : Colors.black54,
+              fontWeight: FontWeight.w500,
+            ),
+          ),
+          
+          if (_searchingSuggestions)
+            const Padding(
+              padding: EdgeInsets.only(top: 12),
+              child: Center(
+                child: SizedBox(
+                  height: 20,
+                  width: 20,
+                  child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF4F46E5)),
+                ),
+              ),
+            ),
+
+          if (_suggestions.isNotEmpty)
+            Container(
+              margin: const EdgeInsets.only(top: 8),
+              decoration: BoxDecoration(
+                color: isDark ? const Color(0xFF1E293B) : Colors.grey.shade50,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(
+                  color: isDark ? const Color(0xFF334155) : Colors.grey.shade200,
+                ),
+              ),
+              constraints: const BoxConstraints(maxHeight: 180),
+              child: ListView.builder(
+                shrinkWrap: true,
+                padding: EdgeInsets.zero,
+                itemCount: _suggestions.length,
+                itemBuilder: (context, idx) {
+                  final item = _suggestions[idx];
+                  return ListTile(
+                    dense: true,
+                    leading: const Icon(Icons.map, size: 16, color: Color(0xFF4F46E5)),
+                    title: Text(
+                      item['display_name']?.split(',')[0] ?? '',
+                      style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+                    ),
+                    subtitle: Text(
+                      item['display_name'] ?? '',
+                      style: const TextStyle(fontSize: 10, color: Colors.grey),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    onTap: () {
+                      _addWaypoint(
+                        item['display_name']?.split(',')[0] ?? '',
+                        item['lat'],
+                        item['lon'],
+                      );
+                      setState(() {
+                        _suggestions = [];
+                        _searchController.clear();
+                      });
+                    },
+                  );
+                },
+              ),
+            ),
         ],
       ),
     );

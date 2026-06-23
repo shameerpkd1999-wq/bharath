@@ -36,14 +36,14 @@ class GeminiService {
           ),
         );
 
-        final systemInstruction = '''
+        const systemInstruction = '''
 You are an expert Indian travel planner. Generate a highly detailed, realistic, geographic-optimized itinerary in JSON format.
 You must return a JSON object with:
 {
   "tripTitle": "A catchy title describing the trip",
   "waypoints": [
     {
-      "placeName": "Name of the place, tourist attraction, or city",
+      "placeName": "Name of the attraction, followed by the target city and state (e.g., 'Hawa Mahal, Jaipur, Rajasthan')",
       "order": 1,
       "suggestedDurationMinutes": 120,
       "localFoodSpots": ["Food Spot 1", "Food Spot 2"],
@@ -51,6 +51,9 @@ You must return a JSON object with:
     }
   ]
 }
+Geographic Rules:
+1. Every stop's placeName must strictly reside within or immediately near the requested destination region (e.g., if requested 'Jaipur', all stops must be in Jaipur. Do not include Agra, Delhi, or places in other states unless the user explicitly requested a multi-state tour).
+2. To prevent search geocoding overlap or snapping to other states, you MUST always append the city and state to the placeName (e.g., 'Lotus Temple, Delhi' or 'Baga Beach, Goa').
 Ensure waypoints are ordered logically for minimum travel time.
 ''';
 
@@ -154,7 +157,7 @@ Ensure waypoints are ordered logically for minimum travel time.
     }
 
     return {
-      'tripTitle': '$regionName [${duration} Days • ${budget.toUpperCase()} • $companions]',
+      'tripTitle': '$regionName [$duration Days • ${budget.toUpperCase()} • $companions]',
       'waypoints': waypoints,
     };
   }

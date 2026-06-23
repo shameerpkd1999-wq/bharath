@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useEffect } from 'react'
+import Image from 'next/image'
 import { useRouter } from 'next/navigation'
 import { 
   Sparkles, 
@@ -23,7 +24,7 @@ import {
 import ProtectedRoute from '@/components/ProtectedRoute'
 import { useAuth } from '@/context/AuthContext'
 import { parseItinerary } from '@/app/actions/parseItinerary'
-import { geocodePlace, getPlaceSuggestions, PlaceSuggestion } from '@/app/actions/geocode'
+import { geocodePlace, getPlaceSuggestions, PlaceSuggestion, fetchPlaceFromMapplsPin } from '@/app/actions/geocode'
 import { db } from '@/lib/firebase'
 
 interface ParsedPlace {
@@ -268,13 +269,39 @@ Traveling companions: ${selectedCompanions}
 
   // Debounced real-time Nominatim suggestions for place search input
   useEffect(() => {
-    if (searchVal.trim().length < 3 || searchVal.startsWith('http://') || searchVal.startsWith('https://')) {
+    const trimmed = searchVal.trim()
+    if (trimmed.length < 3) {
       return
     }
+
+    const pinRegex = /^[A-Za-z0-9]{6}$/
+    const mapplsUrlRegex = /mappls\.com\/(?:pin\/)?([A-Za-z0-9]{6})/i
 
     const delayDebounce = setTimeout(async () => {
       setSearchingSuggestions(true)
       try {
+        if (mapplsUrlRegex.test(trimmed) || pinRegex.test(trimmed)) {
+          const pinMatch = trimmed.match(mapplsUrlRegex)
+          const pin = pinMatch ? pinMatch[1] : trimmed
+          const details = await fetchPlaceFromMapplsPin(pin)
+          if (details) {
+            setSuggestions([
+              {
+                display_name: `${details.placeName}, ${details.address}`,
+                lat: details.lat,
+                lon: details.lng
+              }
+            ])
+            setSearchingSuggestions(false)
+            return
+          }
+        }
+
+        if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
+          setSearchingSuggestions(false)
+          return
+        }
+
         const data = await getPlaceSuggestions(searchVal)
         setSuggestions(data)
       } catch (err) {
@@ -290,7 +317,7 @@ Traveling companions: ${selectedCompanions}
   const handleSelectSuggestion = (place: PlaceSuggestion) => {
     const newStop: CustomStopItem = {
       id: generateCustomWaypointId(customStops.length),
-      placeName: place.display_name,
+      placeName: place.display_name.split(',')[0],
       lat: parseFloat(String(place.lat)),
       lng: parseFloat(String(place.lon)),
       durationMin: 90,
@@ -326,16 +353,27 @@ Traveling companions: ${selectedCompanions}
       parsed.map(async (item, index) => {
         let lat = item.lat
         let lng = item.lng
+        let placeName = item.placeName
+
+        if (placeName.startsWith('Mappls Pin:')) {
+          const pin = placeName.replace('Mappls Pin:', '').trim()
+          const details = await fetchPlaceFromMapplsPin(pin)
+          if (details) {
+            placeName = details.placeName
+            lat = details.lat
+            lng = details.lng
+          }
+        }
         
         if (lat === undefined || lng === undefined) {
-          const coords = await resolveCoordsForCustomStop(item.placeName)
+          const coords = await resolveCoordsForCustomStop(placeName)
           lat = coords.lat
           lng = coords.lng
         }
         
         return {
           id: generateCustomWaypointId(customStops.length, index),
-          placeName: item.placeName,
+          placeName: placeName,
           lat: lat,
           lng: lng,
           durationMin: 90,
@@ -350,16 +388,46 @@ Traveling companions: ${selectedCompanions}
   }
 
   const handleAddStopManually = async () => {
-    if (!searchVal.trim()) return
+    const trimmedVal = searchVal.trim()
+    if (!trimmedVal) return
     
-    if (searchVal.startsWith('http://') || searchVal.startsWith('https://')) {
-      await handleImportUrl(searchVal)
+    if (trimmedVal.startsWith('http://') || trimmedVal.startsWith('https://')) {
+      await handleImportUrl(trimmedVal)
       return
+    }
+
+    // Intercept 6-character Mappls Pin (e.g. 0mxcrz)
+    const pinRegex = /^[A-Za-z0-9]{6}$/
+    if (pinRegex.test(trimmedVal)) {
+      setSearchingSuggestions(true)
+      try {
+        const details = await fetchPlaceFromMapplsPin(trimmedVal)
+        if (details) {
+          const newStop: CustomStopItem = {
+            id: generateCustomWaypointId(customStops.length),
+            placeName: details.placeName,
+            lat: details.lat,
+            lng: details.lng,
+            durationMin: 90,
+            foodSpots: '',
+            photoPoints: '',
+            editing: false
+          }
+          setCustomStops(prev => [...prev, newStop])
+          setSearchVal('')
+          setSuggestions([])
+          setSearchingSuggestions(false)
+          return
+        }
+      } catch (err) {
+        console.error('Failed to resolve Mappls Pin on manually adding:', err)
+      }
+      setSearchingSuggestions(false)
     }
 
     const newStop: CustomStopItem = {
       id: generateCustomWaypointId(customStops.length),
-      placeName: searchVal.trim(),
+      placeName: trimmedVal,
       lat: 20.5937,
       lng: 78.9629,
       durationMin: 90,
@@ -673,10 +741,12 @@ Traveling companions: ${selectedCompanions}
                             : 'border-transparent hover:border-slate-200 dark:hover:border-slate-700'
                         }`}
                       >
-                        <img
+                        <Image
                           src={preset.url}
                           alt={preset.label}
-                          className="w-full h-full object-cover"
+                          fill
+                          sizes="(max-width: 768px) 33vw, 120px"
+                          className="object-cover"
                         />
                         <div className="absolute inset-0 bg-black/35 flex items-center justify-center">
                           <span className="text-[8px] font-extrabold text-white leading-none px-1 py-0.5 rounded bg-black/40">
@@ -974,10 +1044,12 @@ Traveling companions: ${selectedCompanions}
                             : 'border-transparent hover:border-slate-200 dark:hover:border-slate-700'
                         }`}
                       >
-                        <img
+                        <Image
                           src={preset.url}
                           alt={preset.label}
-                          className="w-full h-full object-cover"
+                          fill
+                          sizes="(max-width: 768px) 33vw, 120px"
+                          className="object-cover"
                         />
                         <div className="absolute inset-0 bg-black/35 flex items-center justify-center">
                           <span className="text-[8px] font-extrabold text-white leading-none px-1 py-0.5 rounded bg-black/40">

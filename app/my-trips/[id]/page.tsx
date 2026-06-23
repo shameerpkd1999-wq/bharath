@@ -209,6 +209,19 @@ export default function TripDetailPage({ params }: { params: Promise<{ id: strin
   const [routeSteps, setRouteSteps] = useState<RouteStep[] | null>(null)
   const [locatingCurrent, setLocatingCurrent] = useState(false)
   const [startTrip, setStartTrip] = useState(false)
+  const [userLocation, setUserLocation] = useState<{ lat: number; lng: number } | null>(null)
+
+  const calculateDistance = (lat1: number, lon1: number, lat2: number, lon2: number) => {
+    const R = 6371
+    const dLat = (lat2 - lat1) * Math.PI / 180
+    const dLon = (lon2 - lon1) * Math.PI / 180
+    const a = 
+      Math.sin(dLat/2) * Math.sin(dLat/2) +
+      Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * 
+      Math.sin(dLon/2) * Math.sin(dLon/2)
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a))
+    return R * c
+  }
 
   const handleSearchChange = (val: string) => {
     setSearchVal(val)
@@ -646,31 +659,41 @@ export default function TripDetailPage({ params }: { params: Promise<{ id: strin
   }
 
   const handleOptimizeRoute = async () => {
-    if (!trip || trip.waypoints.length <= 2) return
+    if (!trip || trip.waypoints.length === 0) return
 
-    // Nearest-neighbor Travelling Salesperson Problem (TSP) solver
-    const waypointsCopy = [...trip.waypoints]
-    const optimized: Waypoint[] = [waypointsCopy.shift()!]
+    let startLat: number | null = null
+    let startLng: number | null = null
 
-    while (waypointsCopy.length > 0) {
-      const last = optimized[optimized.length - 1]
-      let nearestIdx = 0
-      let minDistance = Infinity
-
-      for (let i = 0; i < waypointsCopy.length; i++) {
-        const current = waypointsCopy[i]
-        // Euclidean distance metric
-        const dist = Math.pow(current.lat - last.lat, 2) + Math.pow(current.lng - last.lng, 2)
-        if (dist < minDistance) {
-          minDistance = dist
-          nearestIdx = i
-        }
+    // Attempt to get browser GPS location for starting coordinates
+    if (typeof window !== 'undefined' && navigator.geolocation) {
+      try {
+        const position = await new Promise<GeolocationPosition>((resolve, reject) => {
+          navigator.geolocation.getCurrentPosition(resolve, reject, {
+            enableHighAccuracy: true,
+            timeout: 4000
+          })
+        })
+        startLat = position.coords.latitude
+        startLng = position.coords.longitude
+      } catch {
+        // Silent catch, fallback below
       }
-
-      optimized.push(waypointsCopy.splice(nearestIdx, 1)[0])
     }
 
-    const reorderedWaypoints = optimized.map((wp, idx) => ({
+    const waypointsCopy = [...trip.waypoints]
+
+    if (startLat !== null && startLng !== null) {
+      const uLat = startLat
+      const uLng = startLng
+      // Sort purely by distance from the user's current GPS location, ascending
+      waypointsCopy.sort((a, b) => {
+        const distA = Math.pow(a.lat - uLat, 2) + Math.pow(a.lng - uLng, 2)
+        const distB = Math.pow(b.lat - uLat, 2) + Math.pow(b.lng - uLng, 2)
+        return distA - distB
+      })
+    }
+
+    const reorderedWaypoints = waypointsCopy.map((wp, idx) => ({
       ...wp,
       order: idx + 1
     }))
@@ -881,6 +904,21 @@ export default function TripDetailPage({ params }: { params: Promise<{ id: strin
 
     loadTripDetail()
   }, [id])
+
+  useEffect(() => {
+    if (typeof window !== 'undefined' && navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(
+        (position) => {
+          setUserLocation({
+            lat: position.coords.latitude,
+            lng: position.coords.longitude
+          })
+        },
+        () => {},
+        { enableHighAccuracy: true }
+      )
+    }
+  }, [])
 
   const handleShare = () => {
     if (typeof window === 'undefined') return
@@ -1214,13 +1252,21 @@ export default function TripDetailPage({ params }: { params: Promise<{ id: strin
                               </div>
                               <div>
                                  <h4 className="font-extrabold text-xs text-slate-800 dark:text-slate-100 leading-tight">{wp.placeName}</h4>
-                                 <div className="flex items-center gap-1.5 mt-0.5">
-                                   <p className="text-[9px] text-slate-400 dark:text-slate-500 font-semibold uppercase">Stop Details</p>
-                                   <span className="text-[9px] text-slate-350 dark:text-slate-700 font-light">|</span>
-                                   <p className="text-[9px] font-mono text-slate-450 dark:text-slate-500">
-                                     {wp.lat !== undefined && wp.lng !== undefined && wp.lat !== null && wp.lng !== null ? `${wp.lat.toFixed(4)}°, ${wp.lng.toFixed(4)}°` : '0.0000°, 0.0000°'}
-                                   </p>
-                                 </div>
+                                 <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
+                                    <p className="text-[9px] text-slate-400 dark:text-slate-500 font-semibold uppercase">Stop Details</p>
+                                    <span className="text-[9px] text-slate-350 dark:text-slate-700 font-light">|</span>
+                                    <p className="text-[9px] font-mono text-slate-450 dark:text-slate-500">
+                                      {wp.lat !== undefined && wp.lng !== undefined && wp.lat !== null && wp.lng !== null ? `${wp.lat.toFixed(4)}°, ${wp.lng.toFixed(4)}°` : '0.0000°, 0.0000°'}
+                                    </p>
+                                    {userLocation && wp.lat && wp.lng && (
+                                      <>
+                                        <span className="text-[9px] text-slate-350 dark:text-slate-700 font-light">|</span>
+                                        <p className="text-[9px] font-semibold text-indigo-500 dark:text-indigo-400">
+                                          {calculateDistance(userLocation.lat, userLocation.lng, wp.lat, wp.lng).toFixed(1)} km from you
+                                        </p>
+                                      </>
+                                    )}
+                                  </div>
                               </div>
                             </div>
                             <div className="flex items-center gap-1.5 shrink-0">

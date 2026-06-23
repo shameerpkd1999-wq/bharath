@@ -50,7 +50,7 @@ class DirectionsPanel extends StatelessWidget {
                     'LIVE DIRECTIONS',
                     style: TextStyle(
                       fontSize: 10,
-                      fontWeight: FontWeight.black,
+                      fontWeight: FontWeight.w900,
                       letterSpacing: 1.2,
                       color: isDark ? Colors.white60 : Colors.black54,
                     ),
@@ -60,14 +60,14 @@ class DirectionsPanel extends StatelessWidget {
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
                 decoration: BoxDecoration(
-                  color: (isDark ? const Color(0xFF818CF8) : const Color(0xFF4F46E5)).withOpacity(0.08),
+                  color: (isDark ? const Color(0xFF818CF8) : const Color(0xFF4F46E5)).withValues(alpha: 0.08),
                   borderRadius: BorderRadius.circular(8),
                 ),
                 child: Text(
                   '${steps.length} Steps',
                   style: TextStyle(
                     fontSize: 9,
-                    fontWeight: FontWeight.extrabold,
+                    fontWeight: FontWeight.w800,
                     color: isDark ? const Color(0xFF818CF8) : const Color(0xFF4F46E5),
                   ),
                 ),

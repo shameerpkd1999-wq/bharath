@@ -44,4 +44,26 @@ class Waypoint {
       'lng': lng,
     };
   }
+
+  Waypoint copyWith({
+    String? id,
+    String? placeName,
+    int? order,
+    int? durationMin,
+    List<String>? foodSpots,
+    List<String>? photoPoints,
+    double? lat,
+    double? lng,
+  }) {
+    return Waypoint(
+      id: id ?? this.id,
+      placeName: placeName ?? this.placeName,
+      order: order ?? this.order,
+      durationMin: durationMin ?? this.durationMin,
+      foodSpots: foodSpots ?? this.foodSpots,
+      photoPoints: photoPoints ?? this.photoPoints,
+      lat: lat ?? this.lat,
+      lng: lng ?? this.lng,
+    );
+  }
 }

@@ -57,4 +57,32 @@ class Trip {
       'geminiError': geminiError,
     };
   }
+
+  Trip copyWith({
+    String? id,
+    String? userId,
+    String? userName,
+    String? title,
+    bool? isPublic,
+    String? sourceText,
+    String? createdAt,
+    String? coverUrl,
+    bool? isMock,
+    String? geminiError,
+    List<Waypoint>? waypoints,
+  }) {
+    return Trip(
+      id: id ?? this.id,
+      userId: userId ?? this.userId,
+      userName: userName ?? this.userName,
+      title: title ?? this.title,
+      isPublic: isPublic ?? this.isPublic,
+      sourceText: sourceText ?? this.sourceText,
+      createdAt: createdAt ?? this.createdAt,
+      coverUrl: coverUrl ?? this.coverUrl,
+      isMock: isMock ?? this.isMock,
+      geminiError: geminiError ?? this.geminiError,
+      waypoints: waypoints ?? this.waypoints,
+    );
+  }
 }

@@ -2,6 +2,7 @@
 
 import { MapPin, Calendar, Users, Compass, ChevronRight, Plus, Trash2 } from 'lucide-react'
 import Link from 'next/link'
+import Image from 'next/image'
 import ProtectedRoute from '@/components/ProtectedRoute'
 import { useAuth } from '@/context/AuthContext'
 import { useState, useEffect } from 'react'
@@ -202,11 +203,15 @@ export default function MyTripsPage() {
                 >
                   {/* Horizontal Layout Card */}
                   <div className="flex p-3 gap-3">
-                    <img
-                      src={trip.image}
-                      alt={trip.title}
-                      className="h-20 w-20 rounded-xl object-cover shrink-0"
-                    />
+                    <div className="relative h-20 w-20 rounded-xl overflow-hidden shrink-0">
+                      <Image
+                        src={trip.image}
+                        alt={trip.title}
+                        fill
+                        sizes="80px"
+                        className="object-cover"
+                      />
+                    </div>
                     <div className="flex-1 min-w-0 flex flex-col justify-between py-0.5">
                       <div>
                         <div className="flex items-center justify-between gap-2">

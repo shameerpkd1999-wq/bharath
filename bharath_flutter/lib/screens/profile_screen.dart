@@ -15,7 +15,7 @@ class ProfileScreen extends StatelessWidget {
       appBar: AppBar(
         title: const Text(
           'My Profile',
-          style: TextStyle(fontWeight: FontWeight.black, fontSize: 18),
+          style: TextStyle(fontWeight: FontWeight.w900, fontSize: 18),
         ),
       ),
       body: Padding(
@@ -34,7 +34,7 @@ class ProfileScreen extends StatelessWidget {
                   user?.displayName?.isNotEmpty == true
                       ? user!.displayName!.substring(0, 1).toUpperCase()
                       : (user?.email?.isNotEmpty == true ? user!.email!.substring(0, 1).toUpperCase() : 'U'),
-                  style: const TextStyle(fontSize: 32, fontWeight: FontWeight.black, color: Colors.white),
+                  style: const TextStyle(fontSize: 32, fontWeight: FontWeight.w900, color: Colors.white),
                 ),
               ),
             ),

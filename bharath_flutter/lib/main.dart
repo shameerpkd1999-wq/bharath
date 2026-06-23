@@ -17,7 +17,7 @@ void main() async {
   try {
     await Firebase.initializeApp();
   } catch (e) {
-    print('Firebase initialization failed: $e. Make sure config files are set up.');
+    debugPrint('Firebase initialization failed: $e. Make sure config files are set up.');
   }
 
   runApp(const MyApp());

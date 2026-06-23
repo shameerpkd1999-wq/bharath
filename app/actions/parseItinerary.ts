@@ -1012,9 +1012,11 @@ You MUST generate a rich and full itinerary containing at least ${targetMinStops
 
 Key Requirements:
 1. For the requested ${duration}-day trip, you MUST generate at least ${targetMinStops} distinct waypoints (stops) ordered sequentially (approx. 3-4 stops per day).
-2. For each waypoint, estimate reasonable duration in minutes suited for standard Indian transport conditions (taking into account typical traffic congestion or winding mountain roads).
-3. For each waypoint, provide exactly 2 iconic local food spots (street stalls, local dhabas, or famous regional restaurants) and 1 to 2 photogenic/scenic photo points.
-4. Ensure the itinerary is logically organized and covers the most interesting attractions in the destination area.`,
+2. Every waypoint must strictly reside within or immediately near the requested destination city or region. Do NOT recommend places in different states or distant cities unless the user explicitly requested a multi-destination tour (e.g., 'Golden Triangle').
+3. Crucial: To guarantee the geocoding APIs snap to the correct state, you MUST always append the city and state to the placeName (e.g., 'Hawa Mahal, Jaipur, Rajasthan' or 'Fort Aguada, Goa').
+4. For each waypoint, estimate reasonable duration in minutes suited for standard Indian transport conditions (taking into account typical traffic congestion or winding mountain roads).
+5. For each waypoint, provide exactly 2 iconic local food spots (street stalls, local dhabas, or famous regional restaurants) and 1 to 2 photogenic/scenic photo points.
+6. Ensure the itinerary is logically organized and covers the most interesting attractions in the destination area.`,
     responseMimeType: 'application/json',
     responseSchema: {
       type: 'object',
@@ -1029,7 +1031,10 @@ Key Requirements:
           items: {
             type: 'object',
             properties: {
-              placeName: { type: 'string', description: 'Name of the place, monument, or stop in India.' },
+              placeName: { 
+                type: 'string', 
+                description: 'Name of the place or monument in India, always appended with the target city and state (e.g., "Lotus Temple, Delhi").' 
+              },
               order: { type: 'integer', description: 'The sequential order of this stop (starting at 1).' },
               suggestedDurationMinutes: { type: 'integer', description: 'Reasonable estimated time to spend at this stop (minimum 30).' },
               localFoodSpots: {
