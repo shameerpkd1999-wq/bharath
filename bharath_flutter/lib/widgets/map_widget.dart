@@ -69,7 +69,6 @@ class _ItineraryMapWidgetState extends State<ItineraryMapWidget> {
   @override
   void dispose() {
     _disposed = true;
-    _mapController.dispose();
     _webViewController = null;
     super.dispose();
   }
