@@ -49,6 +49,7 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
   double _currentSpeed = 0.0;
   double _lastValidHeading = 0.0;
   DateTime _lastCameraUpdateTime = DateTime.fromMillisecondsSinceEpoch(0);
+  bool _routeFetched = false; // Avoid re-fetching route on every GPS tick
 
   // Search and Suggestion State
   final TextEditingController _searchController = TextEditingController();
@@ -85,20 +86,21 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
         final diff = (heading - lastSentCompassHeading).abs();
         final timeDiff = now.difference(lastCompassUpdateTime).inMilliseconds;
 
-        // Throttle updates to max once every 250ms and ignore tiny changes < 2 degrees
-        if (lastSentCompassHeading == -999.0 || (diff > 2.0 && timeDiff > 250)) {
+        // Throttle updates: max once every 300ms and only for meaningful changes > 3 degrees
+        if (lastSentCompassHeading == -999.0 || (diff > 3.0 && timeDiff > 300)) {
           lastSentCompassHeading = heading;
           lastCompassUpdateTime = now;
+          _compassHeading = heading;
 
-          setState(() {
-            _compassHeading = heading;
-            if (_userLocation != null && _currentSpeed < 2.0) {
+          // Only update map when stationary and navigation is active
+          if (_startTrip && _userLocation != null && _currentSpeed < 2.0) {
+            setState(() {
               _userLocation = {
                 ..._userLocation!,
                 'heading': heading,
               };
-            }
-          });
+            });
+          }
         }
       }
     });
@@ -361,7 +363,7 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
   }
 
   // Fetch routing updates from OSRM
-  Future<void> _calculateRoute() async {
+  Future<void> _calculateRoute({bool force = false}) async {
     if (_trip == null || _trip!.waypoints.length < 2) {
       setState(() {
         _polyline = [];
@@ -371,6 +373,10 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
       });
       return;
     }
+
+    // During active navigation, only fetch the route once — the route geometry
+    // is static and doesn't change when the user moves. Skip redundant calls.
+    if (_startTrip && _routeFetched && !force) return;
 
     final routeData = await _routingService.fetchRoute(
       waypoints: _trip!.waypoints,
@@ -385,6 +391,7 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
         _distanceKm = routeData['distanceKm'];
         _durationMin = routeData['durationMin'];
         _routeSteps = routeData['steps'];
+        if (_startTrip) _routeFetched = true;
       });
     }
   }
@@ -397,10 +404,11 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
         _startTrip = false;
         _userLocation = null;
         _routeSteps = [];
+        _routeFetched = false;
       });
       await _positionStreamSubscription?.cancel();
       _positionStreamSubscription = null;
-      _calculateRoute();
+      _calculateRoute(force: true);
     } else {
       // Starting navigation - check permissions & GPS service
       bool serviceEnabled;
@@ -450,7 +458,7 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
             'heading': finalHeading,
           };
         });
-        _calculateRoute();
+        _calculateRoute(force: true); // Fetch route once at navigation start
       } catch (e) {
         _showSnackbar('Error fetching initial location: $e');
       }
@@ -460,7 +468,7 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
       _positionStreamSubscription = Geolocator.getPositionStream(
         locationSettings: const LocationSettings(
           accuracy: LocationAccuracy.high,
-          distanceFilter: 5, // update when user moves 5 meters for better responsiveness
+          distanceFilter: 3, // finer position updates for smoother tracking
         ),
       ).listen(
         (Position position) {
@@ -477,13 +485,14 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
               diff = 360.0 - diff;
             }
 
-            // Rate-limit updates to 500ms and ignore small angle changes (< 10 degrees)
-            if (diff > 10.0 && now.difference(_lastCameraUpdateTime).inMilliseconds > 500) {
+            // Rate-limit camera rotation to 400ms and ignore small angle changes (< 8 degrees)
+            if (diff > 8.0 && now.difference(_lastCameraUpdateTime).inMilliseconds > 400) {
               double delta = position.heading - _lastValidHeading;
               if (delta > 180.0) delta -= 360.0;
               if (delta < -180.0) delta += 360.0;
 
-              double smoothedHeading = _lastValidHeading + delta * 0.2;
+              // Higher smoothing factor (0.35) for more responsive rotation
+              double smoothedHeading = _lastValidHeading + delta * 0.35;
               smoothedHeading = (smoothedHeading + 360.0) % 360.0;
 
               finalHeading = smoothedHeading;
@@ -502,7 +511,8 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
               'heading': finalHeading,
             };
           });
-          _calculateRoute();
+          // Do NOT call _calculateRoute() here — the route is already fetched.
+          // Only the user position (userLocation) changed, which the map widget handles.
         },
         onError: (error) {
           _showSnackbar('Location tracking error: $error');

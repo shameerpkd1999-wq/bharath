@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:math' as math;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
@@ -36,6 +37,16 @@ class _ItineraryMapWidgetState extends State<ItineraryMapWidget> {
   final MapController _mapController = MapController();
   double _rotation = 0.0;
 
+  // Caching: avoid redundant snapping/splitting on every frame
+  Map<String, double>? _cachedSnappedLocation;
+  List<Map<String, double>>? _lastRawUserLocation;
+  List<Map<String, double>>? _lastPolylineForSnap;
+  List<Map<String, double>> _cachedCompleted = [];
+  List<Map<String, double>> _cachedRemaining = [];
+
+  // JS bridge debounce: prevent flooding the WebView
+  bool _jsPending = false;
+
   // Read SDK Key from environment with fallback
   static const String _mapplKey = String.fromEnvironment(
     'MAPPLS_SDK_KEY',
@@ -45,7 +56,6 @@ class _ItineraryMapWidgetState extends State<ItineraryMapWidget> {
   @override
   void initState() {
     super.initState();
-    // Enable Mappls if key is configured and we are running on supported mobile OS
     _useMappls = _mapplKey.isNotEmpty &&
         (defaultTargetPlatform == TargetPlatform.android ||
             defaultTargetPlatform == TargetPlatform.iOS);
@@ -70,7 +80,6 @@ class _ItineraryMapWidgetState extends State<ItineraryMapWidget> {
               });
               _sendUpdateToWeb();
             } else if (data['event'] == 'error') {
-              // Fail-safe: Fallback to Leaflet if Mappls script load fails
               setState(() {
                 _useMappls = false;
               });
@@ -79,6 +88,42 @@ class _ItineraryMapWidgetState extends State<ItineraryMapWidget> {
         },
       )
       ..loadHtmlString(_buildHtmlContent(), baseUrl: 'https://bharath-dusky.vercel.app/');
+  }
+
+  // ─── Geometry helpers (cached) ──────────────────────────────────
+
+  /// Recompute effective location + split only when inputs actually change
+  void _recomputeIfNeeded() {
+    final rawLoc = widget.userLocation;
+    final poly = widget.polylinePoints;
+
+    // Check if inputs changed (identity check is fast)
+    if (identical(rawLoc, _lastRawUserLocation) &&
+        identical(poly, _lastPolylineForSnap) &&
+        _cachedSnappedLocation != null) {
+      return;
+    }
+
+    _lastRawUserLocation = rawLoc as List<Map<String, double>>?;
+    _lastPolylineForSnap = poly;
+
+    if (rawLoc == null) {
+      _cachedSnappedLocation = null;
+      _cachedCompleted = [];
+      _cachedRemaining = poly;
+      return;
+    }
+
+    if (widget.startTrip && poly.isNotEmpty) {
+      _cachedSnappedLocation = _snapToPolyline(rawLoc, poly);
+      final split = _splitPolyline(_cachedSnappedLocation!, poly);
+      _cachedCompleted = split['completed']!;
+      _cachedRemaining = split['remaining']!;
+    } else {
+      _cachedSnappedLocation = rawLoc;
+      _cachedCompleted = [];
+      _cachedRemaining = poly;
+    }
   }
 
   Map<String, double> _snapToPolyline(
@@ -139,14 +184,6 @@ class _ItineraryMapWidgetState extends State<ItineraryMapWidget> {
       'lat': snappedLat,
       'lng': snappedLng,
     };
-  }
-
-  Map<String, double>? _getEffectiveUserLocation() {
-    if (widget.userLocation == null) return null;
-    if (widget.startTrip && widget.polylinePoints.isNotEmpty) {
-      return _snapToPolyline(widget.userLocation!, widget.polylinePoints);
-    }
-    return widget.userLocation;
   }
 
   Map<String, List<Map<String, double>>> _splitPolyline(
@@ -218,8 +255,11 @@ class _ItineraryMapWidgetState extends State<ItineraryMapWidget> {
     };
   }
 
+  // ─── WebView JS bridge (debounced) ──────────────────────────────
+
   void _sendUpdateToWeb() {
     if (!_mapplsLoaded || _webViewController == null) return;
+    _recomputeIfNeeded();
 
     final waypointsData = widget.waypoints.map((wp) => {
       'id': wp.id,
@@ -234,23 +274,13 @@ class _ItineraryMapWidgetState extends State<ItineraryMapWidget> {
       'lng': pt['lng'],
     }).toList();
 
-    final effectiveLocation = _getEffectiveUserLocation();
-    List<Map<String, double>> completedData = [];
-    List<Map<String, double>> remainingData = widget.polylinePoints;
-
-    if (widget.startTrip && effectiveLocation != null && widget.polylinePoints.isNotEmpty) {
-      final split = _splitPolyline(effectiveLocation, widget.polylinePoints);
-      completedData = split['completed']!;
-      remainingData = split['remaining']!;
-    }
-
     final data = {
       'waypoints': waypointsData,
       'polylinePoints': polylineData,
-      'completedPoints': completedData,
-      'remainingPoints': remainingData,
+      'completedPoints': _cachedCompleted,
+      'remainingPoints': _cachedRemaining,
       'activeWaypointId': widget.activeWaypointId,
-      'userLocation': effectiveLocation,
+      'userLocation': _cachedSnappedLocation,
       'startTrip': widget.startTrip,
     };
 
@@ -259,49 +289,56 @@ class _ItineraryMapWidgetState extends State<ItineraryMapWidget> {
   }
 
   void _sendUserLocationUpdate() {
-    final effectiveLocation = _getEffectiveUserLocation();
-    if (!_mapplsLoaded || _webViewController == null || effectiveLocation == null) return;
+    if (!_mapplsLoaded || _webViewController == null) return;
+    _recomputeIfNeeded();
+    final loc = _cachedSnappedLocation;
+    if (loc == null) return;
 
-    List<Map<String, double>> completedData = [];
-    List<Map<String, double>> remainingData = widget.polylinePoints;
-
-    if (widget.startTrip && widget.polylinePoints.isNotEmpty) {
-      final split = _splitPolyline(effectiveLocation, widget.polylinePoints);
-      completedData = split['completed']!;
-      remainingData = split['remaining']!;
-    }
+    // Debounce: skip this call if a previous one hasn't completed yet
+    if (_jsPending) return;
+    _jsPending = true;
 
     final data = {
-      'lat': effectiveLocation['lat'],
-      'lng': effectiveLocation['lng'],
-      'heading': effectiveLocation['heading'] ?? 0.0,
+      'lat': loc['lat'],
+      'lng': loc['lng'],
+      'heading': loc['heading'] ?? 0.0,
       'startTrip': widget.startTrip,
-      'completedPoints': completedData,
-      'remainingPoints': remainingData,
+      'completedPoints': _cachedCompleted,
+      'remainingPoints': _cachedRemaining,
     };
 
     final jsonStr = jsonEncode(data);
-    _webViewController?.runJavaScript('updateUserLocation($jsonStr);');
+    _webViewController?.runJavaScript('updateUserLocation($jsonStr);').then((_) {
+      _jsPending = false;
+    }).catchError((_) {
+      _jsPending = false;
+    });
   }
 
   @override
   void didUpdateWidget(covariant ItineraryMapWidget oldWidget) {
     super.didUpdateWidget(oldWidget);
 
+    // Invalidate cache when inputs change
+    if (!identical(widget.userLocation, oldWidget.userLocation) ||
+        !identical(widget.polylinePoints, oldWidget.polylinePoints) ||
+        widget.startTrip != oldWidget.startTrip) {
+      _cachedSnappedLocation = null; // force recompute
+    }
+
     if (_useMappls) {
       if (_mapplsLoaded) {
-        final waypointsChanged = widget.waypoints != oldWidget.waypoints;
-        final polylineChanged = widget.polylinePoints != oldWidget.polylinePoints;
+        final waypointsChanged = !identical(widget.waypoints, oldWidget.waypoints);
+        final polylineChanged = !identical(widget.polylinePoints, oldWidget.polylinePoints);
         final activeWaypointChanged = widget.activeWaypointId != oldWidget.activeWaypointId;
         final startTripChanged = widget.startTrip != oldWidget.startTrip;
 
         if (waypointsChanged || polylineChanged || activeWaypointChanged || startTripChanged) {
           _sendUpdateToWeb();
-        } else if (widget.userLocation != oldWidget.userLocation && widget.userLocation != null) {
+        } else if (!identical(widget.userLocation, oldWidget.userLocation) && widget.userLocation != null) {
           _sendUserLocationUpdate();
         }
 
-        // Pan to active waypoint if it changes
         if (widget.activeWaypointId != null &&
             widget.activeWaypointId != oldWidget.activeWaypointId) {
           _webViewController?.runJavaScript("setActiveWaypoint('${widget.activeWaypointId}');");
@@ -320,18 +357,18 @@ class _ItineraryMapWidgetState extends State<ItineraryMapWidget> {
         }
       }
 
-      // Live Navigation camera tracking & rotation
-      final effectiveLocation = _getEffectiveUserLocation();
+      // Live Navigation camera tracking & rotation (single atomic operation)
+      _recomputeIfNeeded();
+      final effectiveLocation = _cachedSnappedLocation;
       if (widget.startTrip && effectiveLocation != null) {
         final double lat = effectiveLocation['lat']!;
         final double lng = effectiveLocation['lng']!;
         final double heading = effectiveLocation['heading'] ?? 0.0;
         
-        _mapController.move(LatLng(lat, lng), 18.0);
-        _mapController.rotate(-heading);
+        // Use moveAndRotate for a single render pass instead of two separate calls
+        _mapController.moveAndRotate(LatLng(lat, lng), 18.0, -heading);
         _rotation = -heading;
       } else if (!widget.startTrip && oldWidget.startTrip) {
-        // Reset rotation if navigation was turned off
         _mapController.rotate(0.0);
         _rotation = 0.0;
       }
@@ -360,6 +397,19 @@ class _ItineraryMapWidgetState extends State<ItineraryMapWidget> {
     .mappls-marker-label.active {
       background: #4F46E5; color: white;
     }
+    /* GPU-accelerated marker rotation via CSS transform */
+    .nav-arrow {
+      will-change: transform;
+      transform-origin: center center;
+      display: flex; align-items: center; justify-content: center;
+      width: 24px; height: 24px;
+    }
+    .nav-arrow svg { display: block; }
+    .user-dot {
+      width: 14px; height: 14px; border-radius: 50%;
+      background-color: #0284c7; border: 2px solid white;
+      box-shadow: 0 0 6px #0284c7;
+    }
   </style>
   <script src="https://sdk.mappls.com/map/sdk/web?v=3.0&access_token=$_mapplKey"></script>
 </head>
@@ -372,6 +422,8 @@ class _ItineraryMapWidgetState extends State<ItineraryMapWidget> {
     let routeCompletedPolyline = null;
     let routeRemainingPolyline = null;
     let userMarker = null;
+    let _pendingFrame = null;
+    let _lastBearing = 0;
 
     window.onload = function() {
       if (typeof mappls === 'undefined') {
@@ -402,6 +454,7 @@ class _ItineraryMapWidgetState extends State<ItineraryMapWidget> {
         try {
           map.setPitch(0);
           map.setBearing(0);
+          _lastBearing = 0;
         } catch (e) {}
       }
 
@@ -437,7 +490,6 @@ class _ItineraryMapWidgetState extends State<ItineraryMapWidget> {
           coords.push([wp.lng, wp.lat]);
 
           const isActive = wp.id === activeWaypointId;
-
           const markerHtml = '<div class="mappls-marker-label' + (isActive ? ' active' : '') + '">' + wp.order + '</div>';
 
           const marker = new mappls.Marker({
@@ -507,9 +559,9 @@ class _ItineraryMapWidgetState extends State<ItineraryMapWidget> {
         const heading = userLoc.heading || 0;
         let userMarkerHtml;
         if (data.startTrip && userLoc.heading !== undefined) {
-          userMarkerHtml = '<div style="transform: rotate(' + heading + 'deg); display: flex; align-items: center; justify-content: center; width: 24px; height: 24px;"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M12 2L4.5 20.29L5.21 21L12 18L18.79 21L19.5 20.29L12 2Z" fill="#3B82F6" stroke="white" stroke-width="2" stroke-linejoin="round"/></svg></div>';
+          userMarkerHtml = '<div class="nav-arrow" style="transform: rotate(' + heading + 'deg)"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M12 2L4.5 20.29L5.21 21L12 18L18.79 21L19.5 20.29L12 2Z" fill="#3B82F6" stroke="white" stroke-width="2" stroke-linejoin="round"/></svg></div>';
         } else {
-          userMarkerHtml = '<div style="width: 14px; height: 14px; border-radius: 50%; background-color: #0284c7; border: 2px solid white; box-shadow: 0 0 6px #0284c7;"></div>';
+          userMarkerHtml = '<div class="user-dot"></div>';
         }
 
         userMarker = new mappls.Marker({
@@ -520,8 +572,9 @@ class _ItineraryMapWidgetState extends State<ItineraryMapWidget> {
           height: 24
         });
 
-        // 4. Update camera position, zoom, tilt (pitch) and bearing for active navigation
+        // 4. Update camera
         if (data.startTrip) {
+          _lastBearing = heading;
           try {
             map.easeTo({
               center: [userLatLng.lng, userLatLng.lat],
@@ -563,9 +616,19 @@ class _ItineraryMapWidgetState extends State<ItineraryMapWidget> {
 
     function updateUserLocation(data) {
       if (!map) return;
-      
+
+      // Batch DOM changes inside requestAnimationFrame to avoid jank
+      if (_pendingFrame) cancelAnimationFrame(_pendingFrame);
+      _pendingFrame = requestAnimationFrame(function() {
+        _pendingFrame = null;
+        _doUpdateUserLocation(data);
+      });
+    }
+
+    function _doUpdateUserLocation(data) {
       const userLatLng = { lat: data.lat, lng: data.lng };
       
+      // Update marker position (reuse existing marker, avoid destroy+recreate)
       if (userMarker) {
         try {
           if (userMarker.setPosition) {
@@ -574,15 +637,16 @@ class _ItineraryMapWidgetState extends State<ItineraryMapWidget> {
             userMarker.setLngLat([data.lng, data.lat]);
           }
           
+          // Update rotation via CSS transform only (no innerHTML replacement)
           if (userMarker.getElement) {
             const heading = data.heading || 0;
-            let innerHtml;
-            if (data.startTrip) {
-              innerHtml = '<div style="transform: rotate(' + heading + 'deg); display: flex; align-items: center; justify-content: center; width: 24px; height: 24px;"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M12 2L4.5 20.29L5.21 21L12 18L18.79 21L19.5 20.29L12 2Z" fill="#3B82F6" stroke="white" stroke-width="2" stroke-linejoin="round"/></svg></div>';
-            } else {
-              innerHtml = '<div style="width: 14px; height: 14px; border-radius: 50%; background-color: #0284c7; border: 2.5px solid white; box-shadow: 0 0 6px #0284c7;"></div>';
+            const navDiv = userMarker.getElement().querySelector('.nav-arrow');
+            if (navDiv) {
+              navDiv.style.transform = 'rotate(' + heading + 'deg)';
+            } else if (data.startTrip) {
+              // Switched from dot to arrow — need one innerHTML update
+              userMarker.getElement().innerHTML = '<div class="nav-arrow" style="transform: rotate(' + heading + 'deg)"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M12 2L4.5 20.29L5.21 21L12 18L18.79 21L19.5 20.29L12 2Z" fill="#3B82F6" stroke="white" stroke-width="2" stroke-linejoin="round"/></svg></div>';
             }
-            userMarker.getElement().innerHTML = innerHtml;
           }
         } catch (e) {
           if (userMarker.remove) userMarker.remove();
@@ -594,9 +658,9 @@ class _ItineraryMapWidgetState extends State<ItineraryMapWidget> {
         const heading = data.heading || 0;
         let userMarkerHtml;
         if (data.startTrip) {
-          userMarkerHtml = '<div style="transform: rotate(' + heading + 'deg); display: flex; align-items: center; justify-content: center; width: 24px; height: 24px;"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M12 2L4.5 20.29L5.21 21L12 18L18.79 21L19.5 20.29L12 2Z" fill="#3B82F6" stroke="white" stroke-width="2" stroke-linejoin="round"/></svg></div>';
+          userMarkerHtml = '<div class="nav-arrow" style="transform: rotate(' + heading + 'deg)"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M12 2L4.5 20.29L5.21 21L12 18L18.79 21L19.5 20.29L12 2Z" fill="#3B82F6" stroke="white" stroke-width="2" stroke-linejoin="round"/></svg></div>';
         } else {
-          userMarkerHtml = '<div style="width: 14px; height: 14px; border-radius: 50%; background-color: #0284c7; border: 2.5px solid white; box-shadow: 0 0 6px #0284c7;"></div>';
+          userMarkerHtml = '<div class="user-dot"></div>';
         }
         
         userMarker = new mappls.Marker({
@@ -608,7 +672,7 @@ class _ItineraryMapWidgetState extends State<ItineraryMapWidget> {
         });
       }
 
-      // Update completed & remaining route lines if provided
+      // Update completed & remaining route lines — reuse objects where possible
       if (data.completedPoints && data.remainingPoints) {
         if (routeCompletedPolyline && routeCompletedPolyline.remove) {
           routeCompletedPolyline.remove();
@@ -643,14 +707,23 @@ class _ItineraryMapWidgetState extends State<ItineraryMapWidget> {
       }
 
       if (data.startTrip) {
+        const heading = data.heading || 0;
+        // Smooth shortest-path bearing interpolation on the JS side
+        let targetBearing = heading;
+        let delta = targetBearing - _lastBearing;
+        if (delta > 180) delta -= 360;
+        if (delta < -180) delta += 360;
+        const smoothBearing = _lastBearing + delta * 0.35;
+        _lastBearing = smoothBearing;
+
         try {
           map.easeTo({
             center: [data.lng, data.lat],
             zoom: 18,
             pitch: 50,
-            bearing: data.heading || 0,
-            duration: 500,
-            easing: function(t) { return t; }
+            bearing: smoothBearing,
+            duration: 400,
+            easing: function(t) { return t * (2 - t); } // ease-out quadratic
           });
         } catch (e) {
           console.error("Camera easeTo error", e);
@@ -659,6 +732,7 @@ class _ItineraryMapWidgetState extends State<ItineraryMapWidget> {
         try {
           map.setPitch(0);
           map.setBearing(0);
+          _lastBearing = 0;
         } catch (e) {}
       }
     }
@@ -681,9 +755,13 @@ class _ItineraryMapWidgetState extends State<ItineraryMapWidget> {
     Widget mapContent;
 
     if (_useMappls && _webViewController != null) {
-      mapContent = WebViewWidget(controller: _webViewController!);
+      mapContent = RepaintBoundary(
+        child: WebViewWidget(controller: _webViewController!),
+      );
     } else {
       // Leaflet Fallback View
+      _recomputeIfNeeded();
+
       LatLng initialCenter = const LatLng(20.5937, 78.9629);
       double initialZoom = 5.0;
 
@@ -702,15 +780,14 @@ class _ItineraryMapWidgetState extends State<ItineraryMapWidget> {
         return LatLng(pt['lat']!, pt['lng']!);
       }).toList();
 
-      final effectiveLocation = _getEffectiveUserLocation();
+      final effectiveLocation = _cachedSnappedLocation;
 
       List<LatLng> completedRoutePoints = [];
       List<LatLng> remainingRoutePoints = routePoints;
 
       if (widget.startTrip && effectiveLocation != null && routePoints.isNotEmpty) {
-        final split = _splitPolyline(effectiveLocation, widget.polylinePoints);
-        completedRoutePoints = split['completed']!.map((pt) => LatLng(pt['lat']!, pt['lng']!)).toList();
-        remainingRoutePoints = split['remaining']!.map((pt) => LatLng(pt['lat']!, pt['lng']!)).toList();
+        completedRoutePoints = _cachedCompleted.map((pt) => LatLng(pt['lat']!, pt['lng']!)).toList();
+        remainingRoutePoints = _cachedRemaining.map((pt) => LatLng(pt['lat']!, pt['lng']!)).toList();
       }
 
       final List<Marker> markers = [];
@@ -725,7 +802,7 @@ class _ItineraryMapWidgetState extends State<ItineraryMapWidget> {
             width: 40,
             height: 40,
             child: Transform.rotate(
-              angle: isNavigating ? heading * (3.141592653589793 / 180) : 0.0,
+              angle: isNavigating ? heading * (math.pi / 180) : 0.0,
               child: isNavigating
                   ? Center(
                       child: Icon(
@@ -814,51 +891,59 @@ class _ItineraryMapWidgetState extends State<ItineraryMapWidget> {
 
       final isDark = Theme.of(context).brightness == Brightness.dark;
 
-      mapContent = FlutterMap(
-        mapController: _mapController,
-        options: MapOptions(
-          initialCenter: initialCenter,
-          initialZoom: initialZoom,
-          maxZoom: 18.0,
-          minZoom: 3.0,
-          onPositionChanged: (position, hasGesture) {
-            setState(() {
-              _rotation = _mapController.camera.rotation;
-            });
-          },
-        ),
-        children: [
-          TileLayer(
-            urlTemplate: 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png',
-            subdomains: const ['a', 'b', 'c', 'd'],
-            userAgentPackageName: 'com.bharatyatra.app',
+      mapContent = RepaintBoundary(
+        child: FlutterMap(
+          mapController: _mapController,
+          options: MapOptions(
+            initialCenter: initialCenter,
+            initialZoom: initialZoom,
+            maxZoom: 18.0,
+            minZoom: 3.0,
+            onPositionChanged: (position, hasGesture) {
+              if (hasGesture) {
+                // Only update rotation state on user gesture, not programmatic moves
+                final newRotation = _mapController.camera.rotation;
+                if ((_rotation - newRotation).abs() > 0.5) {
+                  setState(() {
+                    _rotation = newRotation;
+                  });
+                }
+              }
+            },
           ),
-          if (routePoints.isNotEmpty)
-            PolylineLayer(
-              polylines: [
-                // 1. Background border outline
-                Polyline(
-                  points: routePoints,
-                  color: isDark ? const Color(0x3F000000) : const Color(0x26000000),
-                  strokeWidth: 8.0,
-                ),
-                // 2. Traveled / Completed part
-                if (widget.startTrip && completedRoutePoints.isNotEmpty)
+          children: [
+            TileLayer(
+              urlTemplate: 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png',
+              subdomains: const ['a', 'b', 'c', 'd'],
+              userAgentPackageName: 'com.bharatyatra.app',
+            ),
+            if (routePoints.isNotEmpty)
+              PolylineLayer(
+                polylines: [
+                  // 1. Background border outline
                   Polyline(
-                    points: completedRoutePoints,
-                    color: const Color(0xFFD0D0D0),
+                    points: routePoints,
+                    color: isDark ? const Color(0x3F000000) : const Color(0x26000000),
+                    strokeWidth: 8.0,
+                  ),
+                  // 2. Traveled / Completed part
+                  if (widget.startTrip && completedRoutePoints.isNotEmpty)
+                    Polyline(
+                      points: completedRoutePoints,
+                      color: const Color(0xFFD0D0D0),
+                      strokeWidth: 5.0,
+                    ),
+                  // 3. Remaining / Untraveled part
+                  Polyline(
+                    points: remainingRoutePoints,
+                    color: const Color(0xFF4F46E5),
                     strokeWidth: 5.0,
                   ),
-                // 3. Remaining / Untraveled part
-                Polyline(
-                  points: remainingRoutePoints,
-                  color: const Color(0xFF4F46E5),
-                  strokeWidth: 5.0,
-                ),
-              ],
-            ),
-          MarkerLayer(markers: markers),
-        ],
+                ],
+              ),
+            MarkerLayer(markers: markers),
+          ],
+        ),
       );
     }
 
@@ -902,7 +987,7 @@ class _ItineraryMapWidgetState extends State<ItineraryMapWidget> {
                     ),
                     child: Center(
                       child: Transform.rotate(
-                        angle: -_rotation * (3.141592653589793 / 180),
+                        angle: -_rotation * (math.pi / 180),
                         child: Stack(
                           alignment: Alignment.center,
                           children: [
