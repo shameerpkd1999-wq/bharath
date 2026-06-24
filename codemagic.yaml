@@ -12,6 +12,8 @@ workflows:
       vars:
         # Default fallback values; override these in Codemagic UI
         GEMINI_API_KEY: "mock_key"
+        MAPPLS_CLIENT_ID: "mock_key"
+        MAPPLS_CLIENT_SECRET: "mock_key"
       flutter: stable
       xcode: latest
       cocoapods: default
@@ -44,7 +46,7 @@ workflows:
       - name: Build iOS for Simulator
         script: |
           cd $FCI_BUILD_DIR/bharath_flutter
-          flutter build ios --simulator --debug --no-codesign --dart-define=GEMINI_API_KEY="$GEMINI_API_KEY"
+          flutter build ios --simulator --debug --no-codesign --dart-define=GEMINI_API_KEY="$GEMINI_API_KEY" --dart-define=MAPPLS_CLIENT_ID="$MAPPLS_CLIENT_ID" --dart-define=MAPPLS_CLIENT_SECRET="$MAPPLS_CLIENT_SECRET"
           # Compress the app build for easy download
           cd build/ios/iphonesimulator
           zip -r ../../../Runner.app.zip Runner.app
@@ -61,6 +63,8 @@ workflows:
         # Create an 'apple_signing' group for certificates, or use Codemagic's App Store Connect integration.
       vars:
         GEMINI_API_KEY: "mock_key"
+        MAPPLS_CLIENT_ID: "mock_key"
+        MAPPLS_CLIENT_SECRET: "mock_key"
       flutter: stable
       xcode: latest
       cocoapods: default
@@ -96,10 +100,10 @@ workflows:
           if [ -z "$APP_STORE_CONNECT_KEY" ]; then
             echo "Signing credentials not configured in Codemagic environment variables."
             echo "Building unsigned release build..."
-            flutter build ipa --release --no-codesign --dart-define=GEMINI_API_KEY="$GEMINI_API_KEY"
+            flutter build ipa --release --no-codesign --dart-define=GEMINI_API_KEY="$GEMINI_API_KEY" --dart-define=MAPPLS_CLIENT_ID="$MAPPLS_CLIENT_ID" --dart-define=MAPPLS_CLIENT_SECRET="$MAPPLS_CLIENT_SECRET"
           else
             echo "Signing credentials found. Building signed release build..."
-            flutter build ipa --release --dart-define=GEMINI_API_KEY="$GEMINI_API_KEY"
+            flutter build ipa --release --dart-define=GEMINI_API_KEY="$GEMINI_API_KEY" --dart-define=MAPPLS_CLIENT_ID="$MAPPLS_CLIENT_ID" --dart-define=MAPPLS_CLIENT_SECRET="$MAPPLS_CLIENT_SECRET"
           fi
     artifacts:
       - $FCI_BUILD_DIR/bharath_flutter/build/ios/ipa/*.ipa
