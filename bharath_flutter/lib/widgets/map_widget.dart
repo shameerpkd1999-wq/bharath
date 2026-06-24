@@ -601,8 +601,8 @@ class _ItineraryMapWidgetState extends State<ItineraryMapWidget> {
               zoom: 18,
               pitch: 50,
               bearing: heading,
-              duration: 500,
-              easing: function(t) { return t; }
+              duration: 1000,
+              easing: function(t) { return t; } // Linear easing for continuous movement
             });
           } catch (e) {
             console.error("Camera navigation error", e);
@@ -742,8 +742,8 @@ class _ItineraryMapWidgetState extends State<ItineraryMapWidget> {
             zoom: 18,
             pitch: 50,
             bearing: smoothBearing,
-            duration: 400,
-            easing: function(t) { return t * (2 - t); } // ease-out quadratic
+            duration: 1000,
+            easing: function(t) { return t; } // Linear easing prevents start-stop jitter between 1Hz GPS ticks
           });
         } catch (e) {
           console.error("Camera easeTo error", e);

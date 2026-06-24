@@ -99,8 +99,8 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
       final diff = (heading - lastSentCompassHeading).abs();
       final timeDiff = now.difference(lastCompassUpdateTime).inMilliseconds;
 
-      // Throttle: max once every 300ms and only for meaningful changes > 5 degrees
-      if (lastSentCompassHeading == -999.0 || (diff > 5.0 && timeDiff > 300)) {
+      // Throttle: max once every 200ms and only for meaningful changes > 3 degrees
+      if (lastSentCompassHeading == -999.0 || (diff > 3.0 && timeDiff > 200)) {
         lastSentCompassHeading = heading;
         lastCompassUpdateTime = now;
         _compassHeading = heading;
