@@ -156,17 +156,28 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                                   ((wp.lat - 20.5937).abs() < 0.001 && (wp.lng - 78.9629).abs() < 0.001);
           if (isZeroOrDefault) {
             final coords = await _routingService.resolveCoordinates(wp.placeName, matchingTrip.title);
-            final healedWp = wp.copyWith(lat: coords['lat']!, lng: coords['lng']!);
+            final healedWp = wp.copyWith(
+              lat: coords['lat'], 
+              lng: coords['lng'],
+              mapplsPin: coords['mapplsPin'],
+            );
             healedWaypoints.add(healedWp);
 
             // Sync healed coordinate back to Firestore in background
             try {
+              final Map<String, dynamic> updateData = {
+                'lat': coords['lat'], 
+                'lng': coords['lng'],
+              };
+              if (coords['mapplsPin'] != null) {
+                updateData['mapplsPin'] = coords['mapplsPin'];
+              }
               await FirebaseFirestore.instance
                   .collection('trips')
                   .doc(widget.tripId)
                   .collection('waypoints')
                   .doc(wp.id)
-                  .set({'lat': coords['lat']!, 'lng': coords['lng']!}, SetOptions(merge: true));
+                  .set(updateData, SetOptions(merge: true));
             } catch (_) {}
           } else {
             healedWaypoints.add(wp);

@@ -11,6 +11,84 @@ class RoutingService {
     defaultValue: 'aaboszsxkdezjefndyureyrkalhergfwcqot',
   );
 
+  static const String _mapplsClientId = String.fromEnvironment('MAPPLS_CLIENT_ID', defaultValue: '');
+  static const String _mapplsClientSecret = String.fromEnvironment('MAPPLS_CLIENT_SECRET', defaultValue: '');
+
+  String? _cachedOAuthToken;
+  DateTime? _tokenExpiry;
+
+  // Fetch OAuth Token for Mappls API (Atlas APIs)
+  Future<String?> _getMapplsOAuthToken() async {
+    if (_mapplsClientId.isEmpty || _mapplsClientSecret.isEmpty) return null;
+    
+    if (_cachedOAuthToken != null && _tokenExpiry != null && DateTime.now().isBefore(_tokenExpiry!)) {
+      return _cachedOAuthToken;
+    }
+
+    try {
+      final response = await http.post(
+        Uri.parse('https://outpost.mapmyindia.com/api/sso/oauth/token'),
+        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+        body: {
+          'grant_type': 'client_credentials',
+          'client_id': _mapplsClientId,
+          'client_secret': _mapplsClientSecret,
+        },
+      );
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        _cachedOAuthToken = data['access_token'];
+        // Token usually expires in 86399 seconds (24h), we'll set it to 23 hours to be safe
+        final int expiresIn = data['expires_in'] ?? 82800;
+        _tokenExpiry = DateTime.now().add(Duration(seconds: expiresIn - 600));
+        return _cachedOAuthToken;
+      } else {
+        debugPrint('Mappls OAuth Error: ${response.body}');
+      }
+    } catch (e) {
+      debugPrint('Mappls OAuth Exception: $e');
+    }
+    return null;
+  }
+
+  // Mappls Autosuggest Search
+  Future<List<Map<String, dynamic>>> searchMapplsAutosuggest(String query) async {
+    final token = await _getMapplsOAuthToken();
+    if (token == null) return [];
+
+    try {
+      final encodedQuery = Uri.encodeComponent(query);
+      // We use Atlas search API for best relevance
+      final url = 'https://atlas.mappls.com/api/places/search/json?query=$encodedQuery&region=IND';
+      
+      final response = await http.get(
+        Uri.parse(url),
+        headers: {
+          'Authorization': 'bearer $token',
+        },
+      );
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        final List<dynamic> places = data['suggestedLocations'] ?? [];
+        return places.map((item) {
+          return {
+            'display_name': item['placeName'] ?? item['placeAddress'] ?? '',
+            'mapplsPin': item['eLoc'],
+            'lat': item['latitude'] is num ? (item['latitude'] as num).toDouble() : double.tryParse(item['latitude']?.toString() ?? ''),
+            'lng': item['longitude'] is num ? (item['longitude'] as num).toDouble() : double.tryParse(item['longitude']?.toString() ?? ''),
+          };
+        }).toList();
+      } else {
+        debugPrint('Mappls Search Error: ${response.body}');
+      }
+    } catch (e) {
+      debugPrint('Mappls Search Exception: $e');
+    }
+    return [];
+  }
+
   // Nominatim Autocomplete Suggestions
   Future<List<Map<String, dynamic>>> getPlaceSuggestions(String query) async {
     try {
@@ -37,6 +115,15 @@ class RoutingService {
       debugPrint('Geocoding suggestions error: $e');
       return [];
     }
+  }
+
+  // Hybrid Autocomplete Suggestions (Mappls -> Nominatim)
+  Future<List<Map<String, dynamic>>> getHybridSuggestions(String query) async {
+    final mapplsResults = await searchMapplsAutosuggest(query);
+    if (mapplsResults.isNotEmpty) {
+      return mapplsResults;
+    }
+    return getPlaceSuggestions(query);
   }
 
   // Clean travel verbs, prefixes, and parentheticals from place name to optimize geocoding
@@ -70,16 +157,27 @@ class RoutingService {
   }
 
   // Geocode a single place name to coordinates with progressive fallbacks
-  Future<Map<String, double>?> geocodePlace(String placeName) async {
+  Future<Map<String, dynamic>?> geocodePlace(String placeName) async {
     try {
       final cleanName = cleanPlaceName(placeName);
       
-      // Try geocoding the cleaned name first
+      // 1. Try Mappls Autosuggest first (Highly Accurate)
+      final mapplsResults = await searchMapplsAutosuggest(cleanName);
+      if (mapplsResults.isNotEmpty && mapplsResults[0]['lat'] != null && mapplsResults[0]['lng'] != null) {
+        return {
+          'lat': mapplsResults[0]['lat'],
+          'lng': mapplsResults[0]['lng'],
+          'mapplsPin': mapplsResults[0]['mapplsPin'],
+        };
+      }
+
+      // 2. Fallback to OpenStreetMap/Nominatim
       var results = await getPlaceSuggestions(cleanName);
       if (results.isNotEmpty) {
         return {
           'lat': results[0]['lat'],
           'lng': results[0]['lon'],
+          'mapplsPin': null,
         };
       }
 
@@ -88,34 +186,37 @@ class RoutingService {
         final parts = cleanName.split(',').map((p) => p.trim()).where((p) => p.isNotEmpty).toList();
         
         if (parts.length > 2) {
-          // Try first part and second part (e.g. "LMB Restaurant, Jaipur")
+          // Try first part and second part
           final query1 = '${parts[0]}, ${parts[1]}';
           results = await getPlaceSuggestions(query1);
           if (results.isNotEmpty) {
             return {
               'lat': results[0]['lat'],
               'lng': results[0]['lon'],
+              'mapplsPin': null,
             };
           }
 
-          // Try first part and last part (e.g. "LMB Restaurant, Rajasthan")
+          // Try first part and last part
           final query2 = '${parts[0]}, ${parts.last}';
           results = await getPlaceSuggestions(query2);
           if (results.isNotEmpty) {
             return {
               'lat': results[0]['lat'],
               'lng': results[0]['lon'],
+              'mapplsPin': null,
             };
           }
         }
 
-        // Try just the first part (e.g. "LMB Restaurant")
+        // Try just the first part
         if (parts.isNotEmpty) {
           results = await getPlaceSuggestions(parts[0]);
           if (results.isNotEmpty) {
             return {
               'lat': results[0]['lat'],
               'lng': results[0]['lon'],
+              'mapplsPin': null,
             };
           }
         }
@@ -318,7 +419,7 @@ class RoutingService {
   }
 
   // Resolve coordinates with landmark & city center fallback logic
-  Future<Map<String, double>> resolveCoordinates(String placeName, String contextText) async {
+  Future<Map<String, dynamic>> resolveCoordinates(String placeName, String contextText) async {
     // 1. Try normal geocoding first
     final coords = await geocodePlace(placeName);
     if (coords != null && coords['lat'] != 0.0 && coords['lng'] != 0.0) {
@@ -329,7 +430,7 @@ class RoutingService {
     final normalizedContext = contextText.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]'), '');
 
     // Specific landmark coordinates (to bypass search overlaps)
-    const specificPlaces = {
+    final Map<String, Map<String, dynamic>> specificPlaces = {
       'tajmahal': {'lat': 27.1751, 'lng': 78.0421},
       'redfort': {'lat': 28.6562, 'lng': 77.2410},
       'qutubminar': {'lat': 28.5245, 'lng': 77.1855},
@@ -370,7 +471,7 @@ class RoutingService {
     }
 
     // Predefined City center coordinate fallback
-    const cityCenters = {
+    final Map<String, Map<String, dynamic>> cityCenters = {
       'delhi': {'lat': 28.6139, 'lng': 77.2090},
       'newdelhi': {'lat': 28.6139, 'lng': 77.2090},
       'agra': {'lat': 27.1767, 'lng': 78.0081},

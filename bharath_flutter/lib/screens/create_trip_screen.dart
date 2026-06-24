@@ -102,8 +102,9 @@ class _CreateTripScreenState extends State<CreateTripScreen> with SingleTickerPr
       for (var wp in waypoints) {
         final coords = await _routingService.resolveCoordinates(wp.placeName, _aiPrompt);
         geocodedWaypoints.add(wp.copyWith(
-          lat: coords['lat']!,
-          lng: coords['lng']!,
+          lat: coords['lat'],
+          lng: coords['lng'],
+          mapplsPin: coords['mapplsPin'],
         ));
       }
 
@@ -134,7 +135,7 @@ class _CreateTripScreenState extends State<CreateTripScreen> with SingleTickerPr
       return;
     }
     setState(() => _searchingSuggestions = true);
-    final data = await _routingService.getPlaceSuggestions(query);
+    final data = await _routingService.getHybridSuggestions(query);
     setState(() {
       _suggestions = data;
       _searchingSuggestions = false;
@@ -152,7 +153,8 @@ class _CreateTripScreenState extends State<CreateTripScreen> with SingleTickerPr
         foodSpots: [],
         photoPoints: [],
         lat: place['lat'],
-        lng: place['lon'],
+        lng: place['lng'] ?? place['lon'], // Support both keys
+        mapplsPin: place['mapplsPin'],
       );
       _customStops.add(newWp);
       _searchController.clear();

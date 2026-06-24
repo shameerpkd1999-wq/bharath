@@ -9,6 +9,8 @@ class Waypoint {
   final double lng;
   final int day;
 
+  final String? mapplsPin; // Mappls eLoc identifier
+
   Waypoint({
     required this.id,
     required this.placeName,
@@ -19,19 +21,21 @@ class Waypoint {
     required this.lat,
     required this.lng,
     this.day = 1,
+    this.mapplsPin,
   });
 
   factory Waypoint.fromMap(Map<String, dynamic> data) {
     return Waypoint(
       id: data['id'] ?? '',
       placeName: data['placeName'] ?? '',
-      order: data['order'] ?? 0,
-      durationMin: data['durationMin'] ?? 0,
+      order: data['order']?.toInt() ?? 0,
+      durationMin: data['durationMin']?.toInt() ?? 60,
       foodSpots: List<String>.from(data['foodSpots'] ?? []),
       photoPoints: List<String>.from(data['photoPoints'] ?? []),
       lat: (data['lat'] as num?)?.toDouble() ?? 0.0,
       lng: (data['lng'] as num?)?.toDouble() ?? 0.0,
-      day: data['day'] ?? 1,
+      day: data['day']?.toInt() ?? 1,
+      mapplsPin: data['mapplsPin'],
     );
   }
 
@@ -59,6 +63,7 @@ class Waypoint {
     double? lat,
     double? lng,
     int? day,
+    String? mapplsPin,
   }) {
     return Waypoint(
       id: id ?? this.id,
@@ -70,6 +75,7 @@ class Waypoint {
       lat: lat ?? this.lat,
       lng: lng ?? this.lng,
       day: day ?? this.day,
+      mapplsPin: mapplsPin ?? this.mapplsPin,
     );
   }
 }
