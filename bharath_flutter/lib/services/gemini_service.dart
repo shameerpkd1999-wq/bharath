@@ -31,12 +31,7 @@ class GeminiService {
         final model = GenerativeModel(
           model: 'gemini-2.5-flash',
           apiKey: apiKey,
-          generationConfig: GenerationConfig(
-            responseMimeType: 'application/json',
-          ),
-        );
-
-        const systemInstruction = '''
+          systemInstruction: Content.system('''
 You are an expert Indian travel planner. Generate a highly detailed, realistic, geographic-optimized itinerary in JSON format.
 You must return a JSON object with:
 {
@@ -56,17 +51,28 @@ Geographic Rules:
 1. Every stop's placeName must strictly reside within or immediately near the requested destination region (e.g., if requested 'Jaipur', all stops must be in Jaipur. Do not include Agra, Delhi, or places in other states unless the user explicitly requested a multi-state tour).
 2. To prevent search geocoding overlap or snapping to other states, you MUST always append the city and state to the placeName (e.g., 'Lotus Temple, Delhi' or 'Baga Beach, Goa').
 Ensure waypoints are ordered logically for minimum travel time.
-''';
+'''),
+          generationConfig: GenerationConfig(
+            responseMimeType: 'application/json',
+          ),
+        );
 
         final prompt = 'Plan a trip to "$text" for $duration days. Budget level: $budget. Companions: $companions.';
         
         final response = await model.generateContent([
-          Content.text(systemInstruction),
           Content.text(prompt),
         ]);
 
         if (response.text != null && response.text!.isNotEmpty) {
-          final decoded = jsonDecode(response.text!) as Map<String, dynamic>;
+          String responseText = response.text!.trim();
+          if (responseText.startsWith('```')) {
+            // Remove markdown code blocks if present
+            responseText = responseText.replaceAll(RegExp(r'^```(json)?'), '');
+            responseText = responseText.replaceAll(RegExp(r'```$'), '');
+            responseText = responseText.trim();
+          }
+
+          final decoded = jsonDecode(responseText) as Map<String, dynamic>;
           tripTitle = decoded['tripTitle'] ?? 'India Exploration';
           var wpsData = decoded['waypoints'] as List<dynamic>? ?? [];
           
