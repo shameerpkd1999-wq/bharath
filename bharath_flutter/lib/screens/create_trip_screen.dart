@@ -35,6 +35,8 @@ class _CreateTripScreenState extends State<CreateTripScreen> with SingleTickerPr
   final List<Waypoint> _customStops = [];
   List<Map<String, dynamic>> _suggestions = [];
   bool _searchingSuggestions = false;
+  int _customTotalDays = 1;
+  int _customSelectedDay = 1;
 
   final List<Map<String, String>> _coverPresets = [
     {'id': 'wanderlust', 'label': 'Wanderlust', 'url': 'https://images.unsplash.com/photo-1488646953014-85cb44e25828?q=80&w=600&auto=format&fit=crop'},
@@ -212,7 +214,10 @@ class _CreateTripScreenState extends State<CreateTripScreen> with SingleTickerPr
         photoPoints: [],
         lat: lat,
         lng: lng,
+        day: _customSelectedDay,
       ));
+      _searchController.clear();
+      _suggestions.clear();
     });
   }
 
@@ -391,6 +396,71 @@ class _CreateTripScreenState extends State<CreateTripScreen> with SingleTickerPr
           ),
           const SizedBox(height: 20),
 
+          // Total Days Selector
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              const Text('Total Days', style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
+              Row(
+                children: [
+                  IconButton(
+                    onPressed: _customTotalDays > 1 ? () {
+                      setState(() {
+                        _customTotalDays--;
+                        if (_customSelectedDay > _customTotalDays) _customSelectedDay = _customTotalDays;
+                      });
+                    } : null,
+                    icon: const Icon(Icons.remove_circle_outline),
+                  ),
+                  Text('$_customTotalDays', style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 16)),
+                  IconButton(
+                    onPressed: () {
+                      setState(() {
+                        _customTotalDays++;
+                      });
+                    },
+                    icon: const Icon(Icons.add_circle_outline),
+                  ),
+                ],
+              )
+            ],
+          ),
+          const SizedBox(height: 12),
+          
+          // Day Selection Tabs
+          SizedBox(
+            height: 40,
+            child: ListView.builder(
+              scrollDirection: Axis.horizontal,
+              itemCount: _customTotalDays,
+              itemBuilder: (context, index) {
+                final dayNum = index + 1;
+                final isSelected = _customSelectedDay == dayNum;
+                return GestureDetector(
+                  onTap: () => setState(() => _customSelectedDay = dayNum),
+                  child: Container(
+                    margin: const EdgeInsets.only(right: 8),
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                    decoration: BoxDecoration(
+                      color: isSelected ? const Color(0xFF4F46E5) : (isDark ? const Color(0xFF1E293B) : Colors.grey.shade200),
+                      borderRadius: BorderRadius.circular(20),
+                    ),
+                    alignment: Alignment.center,
+                    child: Text(
+                      'Day $dayNum',
+                      style: TextStyle(
+                        color: isSelected ? Colors.white : (isDark ? Colors.white : Colors.black),
+                        fontWeight: FontWeight.bold,
+                        fontSize: 12,
+                      ),
+                    ),
+                  ),
+                );
+              },
+            ),
+          ),
+          const SizedBox(height: 20),
+
           // Add Stops Search Autocomplete or Paste Maps Links
           const Text('Add Stops (Search or paste Maps link)', style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
           const SizedBox(height: 8),
@@ -473,76 +543,83 @@ class _CreateTripScreenState extends State<CreateTripScreen> with SingleTickerPr
           const SizedBox(height: 24),
 
           // Route Timeline List
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Text('Route Stops (${_customStops.length})', style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
-              if (_customStops.length > 1)
-                const Text('Drag items to reorder', style: TextStyle(fontSize: 9, color: Colors.grey)),
-            ],
-          ),
-          const SizedBox(height: 8),
+          Builder(
+            builder: (context) {
+              final dayStops = _customStops.where((wp) => wp.day == _customSelectedDay).toList();
+              
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text('Day $_customSelectedDay Stops (${dayStops.length})', style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
+                      if (dayStops.length > 1)
+                        const Text('Drag items to reorder', style: TextStyle(fontSize: 9, color: Colors.grey)),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
 
-          _customStops.isEmpty
-              ? Container(
-                  padding: const EdgeInsets.all(32),
-                  decoration: BoxDecoration(
-                    color: isDark ? const Color(0xFF1E293B) : Colors.grey.shade50,
-                    borderRadius: BorderRadius.circular(16),
-                    border: Border.all(style: BorderStyle.solid, color: Colors.grey.shade300),
-                  ),
-                  child: const Text(
-                    'No stops added to your route yet.',
-                    textAlign: TextAlign.center,
-                    style: TextStyle(color: Colors.grey, fontSize: 11),
-                  ),
-                )
-              : ListView.builder(
-                  shrinkWrap: true,
-                  physics: const NeverScrollableScrollPhysics(),
-                  itemCount: _customStops.length,
-                  itemBuilder: (context, index) {
-                    final wp = _customStops[index];
-                    return Card(
-                      margin: const EdgeInsets.only(bottom: 12),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-                      child: ListTile(
-                        leading: CircleAvatar(
-                          radius: 12,
-                          backgroundColor: const Color(0xFF4F46E5),
-                          child: Text('${index + 1}', style: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold)),
-                        ),
-                        title: Text(
-                          wp.placeName,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
-                        ),
-                        trailing: IconButton(
-                          icon: const Icon(Icons.delete_outline, color: Colors.red, size: 18),
-                          onPressed: () {
-                            setState(() {
-                              _customStops.removeAt(index);
-                              // re-order
-                              for (int i = 0; i < _customStops.length; i++) {
-                                _customStops[i] = Waypoint(
-                                  id: _customStops[i].id,
-                                  placeName: _customStops[i].placeName,
-                                  order: i + 1,
-                                  durationMin: _customStops[i].durationMin,
-                                  foodSpots: _customStops[i].foodSpots,
-                                  photoPoints: _customStops[i].photoPoints,
-                                  lat: _customStops[i].lat,
-                                  lng: _customStops[i].lng,
-                                );
-                              }
-                            });
+                  dayStops.isEmpty
+                      ? Container(
+                          padding: const EdgeInsets.all(32),
+                          decoration: BoxDecoration(
+                            color: isDark ? const Color(0xFF1E293B) : Colors.grey.shade50,
+                            borderRadius: BorderRadius.circular(16),
+                            border: Border.all(style: BorderStyle.solid, color: Colors.grey.shade300),
+                          ),
+                          child: Text(
+                            'No stops added to Day $_customSelectedDay yet.',
+                            textAlign: TextAlign.center,
+                            style: const TextStyle(color: Colors.grey, fontSize: 11),
+                          ),
+                        )
+                      : ListView.builder(
+                          shrinkWrap: true,
+                          physics: const NeverScrollableScrollPhysics(),
+                          itemCount: dayStops.length,
+                          itemBuilder: (context, index) {
+                            final wp = dayStops[index];
+                            return Card(
+                              margin: const EdgeInsets.only(bottom: 12),
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                              child: ListTile(
+                                leading: CircleAvatar(
+                                  radius: 12,
+                                  backgroundColor: const Color(0xFF4F46E5),
+                                  child: Text('${index + 1}', style: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold)),
+                                ),
+                                title: Text(
+                                  wp.placeName,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+                                ),
+                                trailing: IconButton(
+                                  icon: const Icon(Icons.delete_outline, color: Colors.red, size: 18),
+                                  onPressed: () {
+                                    setState(() {
+                                      _customStops.removeWhere((item) => item.id == wp.id);
+                                      // re-order only the current day's stops
+                                      final currentDayStops = _customStops.where((item) => item.day == _customSelectedDay).toList();
+                                      for (int i = 0; i < currentDayStops.length; i++) {
+                                        final targetId = currentDayStops[i].id;
+                                        final indexInMain = _customStops.indexWhere((item) => item.id == targetId);
+                                        if (indexInMain != -1) {
+                                          _customStops[indexInMain] = currentDayStops[i].copyWith(order: i + 1);
+                                        }
+                                      }
+                                    });
+                                  },
+                                ),
+                              ),
+                            );
                           },
                         ),
-                      ),
-                    );
-                  },
-                ),
+                ],
+              );
+            }
+          ),
           const SizedBox(height: 20),
 
           // Cover Theme

@@ -7,6 +7,7 @@ class Waypoint {
   final List<String> photoPoints;
   final double lat;
   final double lng;
+  final int day;
 
   Waypoint({
     required this.id,
@@ -17,6 +18,7 @@ class Waypoint {
     required this.photoPoints,
     required this.lat,
     required this.lng,
+    this.day = 1,
   });
 
   factory Waypoint.fromMap(Map<String, dynamic> data) {
@@ -29,6 +31,7 @@ class Waypoint {
       photoPoints: List<String>.from(data['photoPoints'] ?? []),
       lat: (data['lat'] as num?)?.toDouble() ?? 0.0,
       lng: (data['lng'] as num?)?.toDouble() ?? 0.0,
+      day: data['day'] ?? 1,
     );
   }
 
@@ -42,6 +45,7 @@ class Waypoint {
       'photoPoints': photoPoints,
       'lat': lat,
       'lng': lng,
+      'day': day,
     };
   }
 
@@ -54,6 +58,7 @@ class Waypoint {
     List<String>? photoPoints,
     double? lat,
     double? lng,
+    int? day,
   }) {
     return Waypoint(
       id: id ?? this.id,
@@ -64,6 +69,7 @@ class Waypoint {
       photoPoints: photoPoints ?? this.photoPoints,
       lat: lat ?? this.lat,
       lng: lng ?? this.lng,
+      day: day ?? this.day,
     );
   }
 }

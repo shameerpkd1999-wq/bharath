@@ -37,6 +37,14 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
   bool _startTrip = false;
   String _travelMode = 'driving';
   String? _activeWaypointId;
+  int _selectedDay = 1;
+
+  int get _totalDays {
+    if (_trip == null || _trip!.waypoints.isEmpty) return 1;
+    return _trip!.waypoints.map((e) => e.day).reduce((a, b) => a > b ? a : b);
+  }
+
+  List<Waypoint> get _dayWaypoints => _trip?.waypoints.where((w) => w.day == _selectedDay).toList() ?? [];
 
   // Route Metrics & Steps
   List<Map<String, double>> _polyline = [];
@@ -239,43 +247,51 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
       } catch (_) {}
     }
 
-    final waypointsCopy = List<Waypoint>.from(_trip!.waypoints);
+    final currentDayWps = _trip!.waypoints.where((w) => w.day == _selectedDay).toList();
+    final otherDayWps = _trip!.waypoints.where((w) => w.day != _selectedDay).toList();
 
     if (startLoc != null) {
       final double userLat = startLoc['lat']!;
       final double userLng = startLoc['lng']!;
       // Sort purely by distance from the user's current location, ascending
-      waypointsCopy.sort((a, b) {
+      currentDayWps.sort((a, b) {
         final distA = (a.lat - userLat) * (a.lat - userLat) + (a.lng - userLng) * (a.lng - userLng);
         final distB = (b.lat - userLat) * (b.lat - userLat) + (b.lng - userLng) * (b.lng - userLng);
         return distA.compareTo(distB);
       });
     }
 
-    final List<Waypoint> reordered = [];
+    final List<Waypoint> reorderedCurrentDay = [];
     bool orderChanged = false;
-    for (int i = 0; i < waypointsCopy.length; i++) {
+    for (int i = 0; i < currentDayWps.length; i++) {
       final order = i + 1;
-      if (waypointsCopy[i].order != order) {
+      if (currentDayWps[i].order != order) {
         orderChanged = true;
       }
-      reordered.add(waypointsCopy[i].copyWith(order: order));
+      reorderedCurrentDay.add(currentDayWps[i].copyWith(order: order));
     }
 
     if (!orderChanged && autoSort) {
       return;
     }
+    
+    final List<Waypoint> allReordered = [...otherDayWps, ...reorderedCurrentDay];
+    // Re-sort allReordered by day and order just to be clean
+    allReordered.sort((a, b) {
+      if (a.day != b.day) return a.day.compareTo(b.day);
+      return a.order.compareTo(b.order);
+    });
 
     setState(() {
-      _trip = _trip!.copyWith(waypoints: reordered);
-      if (reordered.isNotEmpty) {
-        _activeWaypointId = reordered[0].id;
+      _trip = _trip!.copyWith(waypoints: allReordered);
+      if (reorderedCurrentDay.isNotEmpty) {
+        _activeWaypointId = reorderedCurrentDay[0].id;
       }
     });
 
     try {
       final batch = FirebaseFirestore.instance.batch();
-      for (var wp in reordered) {
+      for (var wp in reorderedCurrentDay) {
         final docRef = FirebaseFirestore.instance
             .collection('trips')
             .doc(widget.tripId)
@@ -307,6 +323,7 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
       photoPoints: [],
       lat: lat,
       lng: lng,
+      day: _selectedDay,
     );
 
     setState(() {
@@ -376,7 +393,8 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
 
   // Fetch routing updates from OSRM
   Future<void> _calculateRoute({bool force = false}) async {
-    if (_trip == null || _trip!.waypoints.length < 2) {
+    final waypoints = _dayWaypoints;
+    if (waypoints.length < 2) {
       setState(() {
         _polyline = [];
         _distanceKm = 0.0;
@@ -391,7 +409,7 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
     if (_startTrip && _routeFetched && !force) return;
 
     final routeData = await _routingService.fetchRoute(
-      waypoints: _trip!.waypoints,
+      waypoints: waypoints,
       travelMode: _travelMode,
       userLocation: _userLocation,
       startTrip: _startTrip,
@@ -555,11 +573,12 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
 
   // --- REDIRECTION LAUNCHERS ---
   Future<void> _launchGoogleMaps() async {
-    if (_trip == null || _trip!.waypoints.isEmpty) return;
+    final waypoints = _dayWaypoints;
+    if (_trip == null || waypoints.isEmpty) return;
 
-    final destWp = _trip!.waypoints.last;
+    final destWp = waypoints.last;
     final dest = '${destWp.lat},${destWp.lng}';
-    final midWaypoints = _trip!.waypoints.slice(0, _trip!.waypoints.length - 1);
+    final midWaypoints = waypoints.slice(0, waypoints.length - 1);
     final waypointsParam = midWaypoints.map((w) => '${w.lat},${w.lng}').join('|');
 
     String url = 'https://www.google.com/maps/dir/?api=1&destination=$dest';
@@ -579,9 +598,10 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
   }
 
   Future<void> _launchMappls() async {
-    if (_trip == null || _trip!.waypoints.isEmpty) return;
+    final waypoints = _dayWaypoints;
+    if (_trip == null || waypoints.isEmpty) return;
     
-    final List<String> coords = _trip!.waypoints.map((w) => '${w.lat},${w.lng}').toList();
+    final List<String> coords = waypoints.map((w) => '${w.lat},${w.lng}').toList();
     final String url = 'https://mappls.com/dir/${coords.join('/')}';
 
     final uri = Uri.parse(url);
@@ -629,7 +649,7 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
               child: Stack(
                 children: [
                   ItineraryMapWidget(
-                    waypoints: _trip!.waypoints,
+                    waypoints: _dayWaypoints,
                     polylinePoints: _polyline,
                     activeWaypointId: _activeWaypointId,
                     userLocation: _userLocation,
@@ -682,6 +702,52 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                     if (_startTrip && _routeSteps.isNotEmpty)
                       DirectionsPanel(steps: _routeSteps),
 
+                    // Day Selection Tabs
+                    if (_totalDays > 1) ...[
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
+                        child: const Text('DAY SELECTION', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w900, letterSpacing: 1.0, color: Colors.grey)),
+                      ),
+                      SizedBox(
+                        height: 40,
+                        child: ListView.builder(
+                          scrollDirection: Axis.horizontal,
+                          padding: const EdgeInsets.symmetric(horizontal: 16),
+                          itemCount: _totalDays,
+                          itemBuilder: (context, index) {
+                            final dayNum = index + 1;
+                            final isSelected = _selectedDay == dayNum;
+                            return GestureDetector(
+                              onTap: () {
+                                setState(() {
+                                  _selectedDay = dayNum;
+                                });
+                                _calculateRoute(force: true);
+                              },
+                              child: Container(
+                                margin: const EdgeInsets.only(right: 8),
+                                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                                decoration: BoxDecoration(
+                                  color: isSelected ? const Color(0xFF4F46E5) : Colors.grey.shade200,
+                                  borderRadius: BorderRadius.circular(20),
+                                ),
+                                alignment: Alignment.center,
+                                child: Text(
+                                  'Day $dayNum',
+                                  style: TextStyle(
+                                    color: isSelected ? Colors.white : Colors.black,
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 12,
+                                  ),
+                                ),
+                              ),
+                            );
+                          },
+                        ),
+                      ),
+                      const SizedBox(height: 16),
+                    ],
+
                     // Timeline Stops List
                     Padding(
                       padding: const EdgeInsets.symmetric(horizontal: 16.0),
@@ -689,7 +755,7 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                         mainAxisAlignment: MainAxisAlignment.spaceBetween,
                         children: [
                           const Text('WAYPOINT TIMELINE', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w900, letterSpacing: 1.0, color: Colors.grey)),
-                          if (_trip!.waypoints.length > 2)
+                          if (_dayWaypoints.length > 2)
                             TextButton.icon(
                               onPressed: () => _arrangeWaypointsByDistance(),
                               icon: const Icon(Icons.auto_awesome, size: 12, color: Color(0xFF4F46E5)),
@@ -707,12 +773,12 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                       ),
                     ),
 
-                    if (_trip!.waypoints.isEmpty)
+                    if (_dayWaypoints.isEmpty)
                       const Padding(
                         padding: EdgeInsets.all(24.0),
                         child: Center(
                           child: Text(
-                            'No waypoints configured for this route.',
+                            'No waypoints configured for this day.',
                             style: TextStyle(fontSize: 12, color: Colors.grey, fontWeight: FontWeight.bold),
                           ),
                         ),
@@ -722,9 +788,9 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                         shrinkWrap: true,
                         physics: const NeverScrollableScrollPhysics(),
                         padding: const EdgeInsets.all(16),
-                        itemCount: _trip!.waypoints.length,
+                        itemCount: _dayWaypoints.length,
                         itemBuilder: (context, index) {
-                          final wp = _trip!.waypoints[index];
+                          final wp = _dayWaypoints[index];
                           final isActive = _activeWaypointId == wp.id;
                           return _buildWaypointCard(context, wp, isActive);
                         },

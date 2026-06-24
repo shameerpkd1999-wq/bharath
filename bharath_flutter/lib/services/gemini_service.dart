@@ -43,6 +43,7 @@ You must return a JSON object with:
   "tripTitle": "A catchy title describing the trip",
   "waypoints": [
     {
+      "day": 1,
       "placeName": "Name of the attraction, followed by the target city and state (e.g., 'Hawa Mahal, Jaipur, Rajasthan')",
       "order": 1,
       "suggestedDurationMinutes": 120,
@@ -80,6 +81,7 @@ Ensure waypoints are ordered logically for minimum travel time.
               photoPoints: List<String>.from(wpMap['photoPoints'] ?? []),
               lat: 0.0, // Will be geocoded by client/routing service
               lng: 0.0,
+              day: wpMap['day'] ?? 1,
             ));
           }
         } else {
@@ -142,8 +144,13 @@ Ensure waypoints are ordered logically for minimum travel time.
     final int targetStops = (duration * 3).clamp(3, 12);
     List<Waypoint> waypoints = [];
 
+    // Calculate roughly how many stops per day
+    final int stopsPerDay = (targetStops / duration).ceil();
+
     for (int i = 0; i < targetStops; i++) {
       final item = pool[i % pool.length];
+      final currentDay = (i ~/ stopsPerDay) + 1;
+      
       waypoints.add(Waypoint(
         id: 'mock-wp-$i-${DateTime.now().millisecondsSinceEpoch}',
         placeName: item['placeName'],
@@ -151,8 +158,9 @@ Ensure waypoints are ordered logically for minimum travel time.
         durationMin: item['suggestedDurationMinutes'] ?? 90,
         foodSpots: List<String>.from(item['localFoodSpots'] ?? []),
         photoPoints: List<String>.from(item['photoPoints'] ?? []),
-        lat: 0.0, // Coordinate mapping will resolve these
+        lat: 0.0,
         lng: 0.0,
+        day: currentDay > duration ? duration : currentDay,
       ));
     }
 
