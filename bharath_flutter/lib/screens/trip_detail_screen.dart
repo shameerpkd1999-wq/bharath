@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -474,13 +475,32 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
         _showSnackbar('Error fetching initial location: $e');
       }
 
+      late LocationSettings locationSettings;
+      if (defaultTargetPlatform == TargetPlatform.android) {
+        locationSettings = AndroidSettings(
+          accuracy: LocationAccuracy.high,
+          distanceFilter: 1, // 1 meter updates
+          forceLocationManager: false,
+          intervalDuration: const Duration(seconds: 1), // Force 1Hz refresh rate on Android
+        );
+      } else if (defaultTargetPlatform == TargetPlatform.iOS || defaultTargetPlatform == TargetPlatform.macOS) {
+        locationSettings = AppleSettings(
+          accuracy: LocationAccuracy.bestForNavigation,
+          distanceFilter: 1,
+          pauseLocationUpdatesAutomatically: false,
+          activityType: ActivityType.automotiveNavigation,
+        );
+      } else {
+        locationSettings = const LocationSettings(
+          accuracy: LocationAccuracy.high,
+          distanceFilter: 1,
+        );
+      }
+
       // Start listening to live position updates
       await _positionStreamSubscription?.cancel();
       _positionStreamSubscription = Geolocator.getPositionStream(
-        locationSettings: const LocationSettings(
-          accuracy: LocationAccuracy.high,
-          distanceFilter: 3, // finer position updates for smoother tracking
-        ),
+        locationSettings: locationSettings,
       ).listen(
         (Position position) {
           if (!mounted) return;
