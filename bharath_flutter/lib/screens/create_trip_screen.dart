@@ -115,7 +115,7 @@ class _CreateTripScreenState extends State<CreateTripScreen> with SingleTickerPr
 
       if (mounted) {
         _showSnackbar('Itinerary Generated Successfully!');
-        Navigator.pushReplacement(
+        Navigator.push(
           context,
           MaterialPageRoute(builder: (context) => TripDetailScreen(tripId: tripId)),
         );
@@ -248,7 +248,7 @@ class _CreateTripScreenState extends State<CreateTripScreen> with SingleTickerPr
     final tripId = await _firestoreService.saveTrip(trip, _customStops);
     
     if (mounted) {
-      Navigator.pushReplacement(
+      Navigator.push(
         context,
         MaterialPageRoute(builder: (context) => TripDetailScreen(tripId: tripId)),
       );
