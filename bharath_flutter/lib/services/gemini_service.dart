@@ -39,7 +39,11 @@ You must return a JSON object with:
   "waypoints": [
     {
       "day": 1,
-      "placeName": "Name of the attraction, followed by the target city and state (e.g., 'Hawa Mahal, Jaipur, Rajasthan')",
+      "name": "Tea Museum",
+      "city": "Munnar",
+      "district": "Idukki",
+      "state": "Kerala",
+      "type": "museum",
       "order": 1,
       "suggestedDurationMinutes": 120,
       "localFoodSpots": ["Food Spot 1", "Food Spot 2"],
@@ -78,9 +82,16 @@ Ensure waypoints are ordered logically for minimum travel time.
           
           for (int i = 0; i < wpsData.length; i++) {
             var wpMap = wpsData[i] as Map<String, dynamic>;
+            
+            // Combine name, city, state for better geocoding results
+            final name = wpMap['name'] ?? 'Attraction';
+            final city = wpMap['city'] ?? '';
+            final state = wpMap['state'] ?? '';
+            final placeName = [name, city, state].where((s) => s.isNotEmpty).join(' ');
+
             waypoints.add(Waypoint(
               id: 'wp-${DateTime.now().millisecondsSinceEpoch}-$i',
-              placeName: wpMap['placeName'] ?? 'Attraction',
+              placeName: placeName,
               order: wpMap['order'] ?? (i + 1),
               durationMin: wpMap['suggestedDurationMinutes'] ?? 90,
               foodSpots: List<String>.from(wpMap['localFoodSpots'] ?? []),
